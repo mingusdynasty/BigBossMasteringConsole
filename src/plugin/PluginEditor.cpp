@@ -6,10 +6,6 @@
 
 using namespace bbui;
 
-namespace
-{
-const char* const kTabNames[BigBossEditor::kNumTabs] = { "ANALYSIS", "EQ", "COMP", "TAPE", "DE-ESS", "LIMIT" };
-}
 
 BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), proc (p)
 {
@@ -42,14 +38,9 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), 
     chain.onSelect = [this] (int s) { showTab (1 + s); };
     addAndMakeVisible (chain);
 
-    for (int t = 0; t < kNumTabs; ++t)
-    {
-        auto& b = tabs[(size_t) t];
-        b.setButtonText (kTabNames[t]);
-        b.setClickingTogglesState (false);
-        b.onClick = [this, t] { showTab (t); };
-        addAndMakeVisible (b);
-    }
+    analysisButton.setClickingTogglesState (false);
+    analysisButton.onClick = [this] { showTab (0); };
+    addAndMakeVisible (analysisButton);
 
     setupKnob (inTrim, pid::inTrim, "INPUT");
     setupKnob (outTrim, pid::outTrim, "OUTPUT");
@@ -109,7 +100,7 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), 
     // last, so every child (the knobs' text boxes too) is rebuilt with the console's look; the rack
     // units keep their own
     setLookAndFeel (&look);
-    setSize (1180, 760);
+    setSize (1180, 724);
     showTab (proc.editorTab);
     startTimerHz (30);
 }
@@ -118,7 +109,7 @@ void BigBossEditor::showTab (int t)
 {
     tab = juce::jlimit (0, kNumTabs - 1, t);
     proc.editorTab = tab;
-    for (int i = 0; i < kNumTabs; ++i) tabs[(size_t) i].setToggleState (i == tab, juce::dontSendNotification);
+    analysisButton.setToggleState (tab == 0, juce::dontSendNotification);
     const bool analysis = tab == 0;
     for (juce::Component* c : std::initializer_list<juce::Component*> { &meters, &spectrum, &gonio, &inTrim.slider, &inTrim.label,
                                                                          &outTrim.slider, &outTrim.label })
@@ -209,15 +200,11 @@ void BigBossEditor::resized()
     inButton.setBounds (header.removeFromRight (48));
 
     r.reduce (16, 0);
-    chain.setBounds (r.removeFromTop (60));
-    r.removeFromTop (10);
-    auto tabRow = r.removeFromTop (26);
-    for (auto& b : tabs)
-    {
-        b.setBounds (tabRow.removeFromLeft (96));
-        tabRow.removeFromLeft (4);
-    }
-    r.removeFromTop (10);
+    auto chainRow = r.removeFromTop (60);
+    analysisButton.setBounds (chainRow.removeFromLeft (120));
+    chainRow.removeFromLeft (18);
+    chain.setBounds (chainRow);
+    r.removeFromTop (12);
     r.removeFromBottom (16);
 
     // module tabs: the rack unit over the meter strip

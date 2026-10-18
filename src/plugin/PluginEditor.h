@@ -8,8 +8,9 @@
 #include "ui/Rack.h"
 #include "ui/Spectrum.h"
 
-// The console: header, chain strip and a row of tabs. ANALYSIS is the metering dashboard; every
-// module has its own tab, drawn as a rack unit, with a slim loudness and peak strip under it.
+// The console: header, then the ANALYSIS button and the chain strip, which double as the tabs.
+// ANALYSIS is the metering dashboard; clicking a module shows it as a rack unit, with a slim
+// loudness and peak strip under it.
 class BigBossEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -38,7 +39,7 @@ private:
     BigBossProcessor& proc;
     bbui::Look look;
     bbui::ChainStrip chain;
-    std::array<juce::TextButton, kNumTabs> tabs;
+    juce::TextButton analysisButton { "ANALYSIS" };
     int tab = 0;
 
     // analysis

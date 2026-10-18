@@ -2,7 +2,7 @@
 
 A mastering console as one VST3: detailed loudness and level metering, and a chain modelled on mastering hardware rather than on other plugins.
 
-The console opens on the **ANALYSIS** dashboard. Every module has its own tab, drawn as a rack unit, with a slim loudness and peak strip under it so levels stay in view. Clicking a module in the chain strip opens its tab.
+The console opens on the **ANALYSIS** dashboard. The chain strip doubles as the tabs: click a module to show it as a rack unit, with a slim loudness and peak strip under it so levels stay in view, and click **ANALYSIS** to go back.
 
 ![Analysis dashboard](docs/screenshot.png)
 
@@ -23,7 +23,7 @@ None of the hardware has public schematics, so the models are voiced from publis
 
 ## The chain
 
-Five slots: **Parametric EQ, Compressor, Tape, De-esser, Limiter**. Click a module to open its tab, drag it to reorder it, click its lamp (or the IN lamp on its rack unit) to bypass it. The EQ and Tape are built; the other slots pass audio through untouched until their step lands.
+Five slots: **Parametric EQ, Compressor, Tape, De-esser, Limiter**. Click a module to open its rack unit, drag it to reorder it, click its lamp (or the IN lamp on its rack unit) to bypass it. The EQ and Tape are built; the other slots pass audio through untouched until their step lands.
 
 - **Latency never changes.** It is the sum of every module's latency, whatever is bypassed or reordered, so the host's delay compensation stays put. A bypassed module's dry path is delayed by the same amount.
 - **Bypass is a 10 ms crossfade**, and bypassed modules keep running, so switching one back in is seamless.
@@ -102,7 +102,7 @@ Linux needs: `libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxc
 - `bb_module_tests`: the EQ is flat when idle, its audio matches the drawn curve within 0.1 dB, boosts are broader than cuts, and the high-pass, mono bass, Warm's 2nd harmonic, click-free switching and reported latency all check out. The tape machine puts 3% THD at each tape's MOL, has unity small-signal gain, reports its true latency, distorts more on 456 than GP9 and more under-biased than over, holds more top end at 30 ips, has its head bump, keeps wow and flutter within spec, switches without clicks, and keeps level constant under Link. Each at several sample rates.
 - `bb_fuzz [seconds]`: random rates, block sizes, extreme signals, bypass and order changes, and random EQ and tape settings through the chain and both meter suites; fails on any non-finite value.
 - pluginval at strictness 10: `pluginval --strictness-level 10 --validate-in-process "build/BigBoss_artefacts/Release/VST3/Big Boss Mastering Console.vst3"` (on Linux, under `xvfb-run -a`).
-- `-DBB_BUILD_SNAPSHOT=ON` builds `bb_snapshot out.png [seconds]`, which runs a synthetic mix through the console and renders every tab to PNGs (`out.png`, `out-eq.png`, `out-tape.png` and so on; the screenshots above).
+- `-DBB_BUILD_SNAPSHOT=ON` builds `bb_snapshot out.png [seconds]`, which runs a synthetic mix through the console and renders the dashboard and every module to PNGs (`out.png`, `out-eq.png`, `out-tape.png` and so on; the screenshots above).
 
 GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand**: Actions → Build → Run workflow (Windows, or all platforms). It never runs on push or on pull requests.
 
