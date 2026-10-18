@@ -1,6 +1,7 @@
 // Fuzzing: random sample rates, block sizes, signals, bypass and order changes through the whole chain
 // and both meter suites. Fails on any non-finite output or reading. Argument: seconds of audio per run.
 #include "chain/Chain.h"
+#include "chain/EqModule.h"
 #include "chain/TapeModule.h"
 #include "meter/MeterSuite.h"
 
@@ -25,7 +26,8 @@ int main (int argc, char** argv)
 
         bb::Chain chain;
         auto* tape = new bb::TapeModule();
-        chain.add (std::make_unique<bb::EmptySlot> ("eq", "EQ"));
+        auto* eq = new bb::EqModule();
+        chain.add (std::unique_ptr<bb::Module> (eq));
         chain.add (std::make_unique<bb::EmptySlot> ("comp", "Comp"));
         chain.add (std::unique_ptr<bb::Module> (tape));
         chain.add (std::make_unique<bb::EmptySlot> ("deess", "De-ess"));
@@ -65,7 +67,26 @@ int main (int argc, char** argv)
                 std::shuffle (o.begin(), o.begin() + 5, rng);
                 chain.setOrder (o);
             }
-            if (rng() % 10 == 0) tape->amount.store (u (rng) * 0.5 + 0.5);
+            if (rng() % 10 == 0)
+            {
+                auto& t = tape->settings;
+                t.speed = (int) (rng() % 2); t.standard = (int) (rng() % 2); t.tape = (int) (rng() % 2); t.bias = (int) (rng() % 3);
+                t.inputDb = 12 * u (rng); t.outputDb = 12 * u (rng); t.wow = 0.5 + 0.5 * u (rng); t.link = rng() & 1;
+            }
+            if (rng() % 10 == 0)
+            {
+                auto& e = eq->settings;
+                for (int b = 0; b < bb::eq::kBands; ++b)
+                {
+                    const auto& rg = bb::eq::kRange[b];
+                    e.band[b] = { rg.lo * std::pow (rg.hi / rg.lo, 0.5 + 0.5 * u (rng)), 6 + 6 * u (rng), (rng() & 1) != 0, (rng() & 1) != 0 };
+                }
+                e.warm = rng() & 1;
+                e.hpfHz = (rng() & 1) ? 10 + 145 * (1 + u (rng)) : 0; e.hpfOrder = (rng() & 1) ? 4 : 2;
+                e.lpfHz = (rng() & 1) ? 15000 + 5000 * u (rng) : 0;
+                e.monoBassHz = (rng() & 1) ? 150 + 100 * u (rng) : 0;
+                e.outputDb = 6 * u (rng);
+            }
             if (rng() % 50 == 0) out.requestReset();
 
             in.process (l.data(), r.data(), n);

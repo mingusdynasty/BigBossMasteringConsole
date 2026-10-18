@@ -1,11 +1,8 @@
-// Tape slot. For now this is the chocolatefudgeverb tape model as it ships in Hot Sauce (Jiles-Atherton
-// hysteresis between record and playback heads, level-matched). Step 2 retunes it into the Studer A80.
+// Tape slot: the A80-style two-track machine (tape/TapeMachine.h).
 #pragma once
 
 #include "Module.h"
-#include "dsp/TapeSaturator.h"
-
-#include <atomic>
+#include "tape/TapeMachine.h"
 
 namespace bb
 {
@@ -15,23 +12,12 @@ public:
     const char* id() const override { return "tape"; }
     const char* name() const override { return "Tape"; }
 
-    void prepare (double sampleRate, int) override
-    {
-        tape.prepare (sampleRate);
-        tape.setAmount (amount.load(), true);
-        tape.reset();
-    }
-    void reset() override { tape.reset(); }
-    int latency() const override { return tape.latencySamples(); }
-    void process (double* l, double* r, int n) override
-    {
-        tape.setAmount (amount.load (std::memory_order_relaxed));
-        tape.process (l, r, n);
-    }
+    void prepare (double sampleRate, int maxBlock) override { machine.setSettings (settings); machine.prepare (sampleRate, maxBlock); }
+    void reset() override { machine.reset(); }
+    int latency() const override { return machine.latency(); }
+    void process (double* l, double* r, int n) override { machine.setSettings (settings); machine.process (l, r, n); }
 
-    std::atomic<double> amount { 0.25 };   // 0..1
-
-private:
-    cf::TapeSaturator tape;
+    TapeMachine::Settings settings;   // set on the audio thread before each block
+    TapeMachine machine;
 };
 } // namespace bb

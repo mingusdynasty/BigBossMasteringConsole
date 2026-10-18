@@ -1,5 +1,7 @@
-// Renders the console to a PNG after running a synthetic mix through it, so the UI can be checked
+// Renders the console to PNGs after running a synthetic mix through it, so the UI can be checked
 // without a host. Usage: bb_snapshot out.png [seconds]
+// Writes out.png (the analysis tab) and out-<tab>.png for each module tab, with a demo setting on
+// the EQ and the tape so their panels have something to show.
 #include "plugin/PluginEditor.h"
 #include "plugin/PluginProcessor.h"
 
@@ -16,6 +18,16 @@ int main (int argc, char** argv)
     const int block = 512;
     proc.setPlayConfigDetails (2, 2, sr, block);
     proc.prepareToPlay (sr, block);
+    auto set = [&proc] (const char* id, float value)
+    {
+        if (auto* p = proc.apvts.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (value));
+    };
+    set ("eq_b0_gain", 2.5f); set ("eq_b0_freq", 50.0f);
+    set ("eq_b2_gain", 2.0f); set ("eq_b2_cut", 1.0f); set ("eq_b2_freq", 400.0f);
+    set ("eq_b3_gain", 1.5f); set ("eq_b3_freq", 3500.0f);
+    set ("eq_b4_gain", 3.0f); set ("eq_b4_freq", 14000.0f);
+    set ("eq_hpf", 25.0f); set ("eq_mono", 120.0f);
+    set ("tape_in", -6.0f);   // the demo mix is hot: bring it to about 0 VU
     std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
     auto* editor = static_cast<BigBossEditor*> (ed.get());
 
@@ -25,8 +37,7 @@ int main (int argc, char** argv)
     juce::AudioBuffer<float> buf (2, block);
     juce::MidiBuffer midi;
     double t = 0, padL = 0, padR = 0, hp = 0;
-    const auto total = (long) (secs * sr);
-    for (long done = 0; done < total; done += block)
+    auto nextBlock = [&]
     {
         for (int i = 0; i < block; ++i, t += 1 / sr)
         {
@@ -41,15 +52,30 @@ int main (int argc, char** argv)
             buf.setSample (1, i, (float) ((kick + bass) + swell * 3 * padR + 0.7 * hat));
         }
         proc.processBlock (buf, midi);
+    };
+    const auto total = (long) (secs * sr);
+    for (long done = 0; done < total; done += block)
+    {
+        nextBlock();
         if ((done / block) % 50 == 0) editor->refreshNow();
     }
-    editor->refreshNow();
-    const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
-    out.deleteFile();
-    juce::FileOutputStream os (out);
-    juce::PNGImageFormat png;
-    if (! os.openedOk() || ! png.writeImageToStream (img, os)) { std::printf ("could not write %s\n", out.getFullPathName().toRawUTF8()); return 1; }
-    std::printf ("wrote %s\n", out.getFullPathName().toRawUTF8());
+    const char* names[] = { "", "eq", "comp", "tape", "deess", "limit" };
+    for (int tab = 0; tab < BigBossEditor::kNumTabs; ++tab)
+    {
+        editor->showTab (tab);
+        for (int f = 0; f < 30; ++f)   // a second of frames, so the VU needles and the strip settle
+        {
+            for (int k = 0; k < 3; ++k) nextBlock();
+            editor->refreshNow();
+        }
+        const auto file = tab == 0 ? out : out.getSiblingFile (out.getFileNameWithoutExtension() + "-" + names[tab] + ".png");
+        const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+        file.deleteFile();
+        juce::FileOutputStream os (file);
+        juce::PNGImageFormat png;
+        if (! os.openedOk() || ! png.writeImageToStream (img, os)) { std::printf ("could not write %s\n", file.getFullPathName().toRawUTF8()); return 1; }
+        std::printf ("wrote %s\n", file.getFullPathName().toRawUTF8());
+    }
     ed.reset();
     return 0;
 }

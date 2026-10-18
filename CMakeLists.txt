@@ -15,7 +15,8 @@ option(BB_BUILD_SNAPSHOT "Build the UI snapshot tool (renders the console to a P
 # ---------------------------------------------------------------- engine (no JUCE dependency)
 # src/dsp is shared with mingusdynasty/chocolatefudgeverb (namespace cf); keep it in step with that repo.
 add_library(bb_engine STATIC
-    src/dsp/TapeHead.cpp src/dsp/TapeSaturator.cpp src/dsp/PlateAmp.cpp
+    src/dsp/TapeHead.cpp src/dsp/TapeSaturator.cpp src/dsp/PlateAmp.cpp src/dsp/Oversampler.cpp
+    src/eq/ClassAEq.cpp src/tape/TapeMachine.cpp
     src/meter/LoudnessMeter.cpp src/meter/TruePeak.cpp src/meter/MeterSuite.cpp
     src/chain/Chain.cpp)
 target_include_directories(bb_engine PUBLIC src)
@@ -26,6 +27,10 @@ if(BB_BUILD_TESTS)
     add_executable(bb_engine_tests tests/EngineTests.cpp)
     target_link_libraries(bb_engine_tests PRIVATE bb_engine)
     add_test(NAME engine COMMAND bb_engine_tests)
+
+    add_executable(bb_module_tests tests/ModuleTests.cpp)
+    target_link_libraries(bb_module_tests PRIVATE bb_engine)
+    add_test(NAME modules COMMAND bb_module_tests)
 
     add_executable(bb_fuzz tests/Fuzz.cpp)
     target_link_libraries(bb_fuzz PRIVATE bb_engine)
@@ -58,13 +63,19 @@ if(BB_BUILD_PLUGIN)
         VST3_CATEGORIES           Fx Mastering Analyzer
         DESCRIPTION               "Mastering console: metering and a hardware-modelled chain")
 
-    target_sources(BigBoss PRIVATE
+    set(BB_PLUGIN_SOURCES
         src/plugin/PluginProcessor.cpp
         src/plugin/PluginEditor.cpp
+        src/plugin/Params.cpp
         src/plugin/ui/Look.cpp
         src/plugin/ui/MeterPanel.cpp
+        src/plugin/ui/MeterStrip.cpp
         src/plugin/ui/Spectrum.cpp
-        src/plugin/ui/ChainStrip.cpp)
+        src/plugin/ui/ChainStrip.cpp
+        src/plugin/ui/Rack.cpp
+        src/plugin/ui/EqUnit.cpp
+        src/plugin/ui/TapeUnit.cpp)
+    target_sources(BigBoss PRIVATE ${BB_PLUGIN_SOURCES})
 
     target_compile_definitions(BigBoss PUBLIC
         JUCE_WEB_BROWSER=0
@@ -84,9 +95,7 @@ if(BB_BUILD_PLUGIN)
 
     if(BB_BUILD_SNAPSHOT)
         juce_add_console_app(bb_snapshot PRODUCT_NAME "bb_snapshot")
-        target_sources(bb_snapshot PRIVATE tools/snapshot/Snapshot.cpp
-            src/plugin/PluginProcessor.cpp src/plugin/PluginEditor.cpp src/plugin/ui/Look.cpp
-            src/plugin/ui/MeterPanel.cpp src/plugin/ui/Spectrum.cpp src/plugin/ui/ChainStrip.cpp)
+        target_sources(bb_snapshot PRIVATE tools/snapshot/Snapshot.cpp ${BB_PLUGIN_SOURCES})
         target_include_directories(bb_snapshot PRIVATE src)
         target_compile_definitions(bb_snapshot PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
             JucePlugin_Name="Big Boss Mastering Console")

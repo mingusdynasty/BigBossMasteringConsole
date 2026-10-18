@@ -1,8 +1,9 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "Params.h"
 
 const BigBossProcessor::SlotInfo BigBossProcessor::kSlots[kNumSlots] = {
-    { "eq",    "Parametric EQ", "step 2" },
+    { "eq",    "Parametric EQ", "" },
     { "comp",  "Compressor",    "step 3" },
     { "tape",  "Tape",          "" },
     { "deess", "De-esser",      "step 4" },
@@ -14,19 +15,10 @@ namespace
 juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
-    auto db = juce::AudioParameterFloatAttributes().withLabel ("dB")
-                  .withStringFromValueFunction ([] (float v, int) { return (v > 0 ? "+" : "") + juce::String (v, 1) + " dB"; });
-    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { BigBossProcessor::kInTrimId, 1 }, "Input Trim",
-                                                             juce::NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f, db));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { BigBossProcessor::kOutTrimId, 1 }, "Output Trim",
-                                                             juce::NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f, db));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { BigBossProcessor::kTapeAmountId, 1 }, "Tape Drive", juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 25.0f,
-        juce::AudioParameterFloatAttributes().withLabel ("%")
-            .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + "%"; })));
-    for (int s = 0; s < BigBossProcessor::kNumSlots; ++s)
-        layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { BigBossProcessor::bypassId (s), 1 },
-                                                                juce::String (BigBossProcessor::kSlots[s].name) + " Bypass", false));
+    const char* ids[BigBossProcessor::kNumSlots];
+    const char* names[BigBossProcessor::kNumSlots];
+    for (int s = 0; s < BigBossProcessor::kNumSlots; ++s) { ids[s] = BigBossProcessor::kSlots[s].id; names[s] = BigBossProcessor::kSlots[s].name; }
+    pid::addLayout (layout, ids, names, BigBossProcessor::kNumSlots);
     return layout;
 }
 }
@@ -39,7 +31,13 @@ BigBossProcessor::BigBossProcessor()
 {
     for (int s = 0; s < kNumSlots; ++s)
     {
-        if (juce::String (kSlots[s].id) == "tape")
+        const juce::String id (kSlots[s].id);
+        if (id == "eq")
+        {
+            eq = new bb::EqModule();
+            chain.add (std::unique_ptr<bb::Module> (eq));
+        }
+        else if (id == "tape")
         {
             tape = new bb::TapeModule();
             chain.add (std::unique_ptr<bb::Module> (tape));
@@ -48,9 +46,54 @@ BigBossProcessor::BigBossProcessor()
             chain.add (std::make_unique<bb::EmptySlot> (kSlots[s].id, kSlots[s].name));
         pBypass[(size_t) s] = apvts.getRawParameterValue (bypassId (s));
     }
-    pInTrim  = apvts.getRawParameterValue (kInTrimId);
-    pOutTrim = apvts.getRawParameterValue (kOutTrimId);
-    pTape    = apvts.getRawParameterValue (kTapeAmountId);
+    pInTrim  = apvts.getRawParameterValue (pid::inTrim);
+    pOutTrim = apvts.getRawParameterValue (pid::outTrim);
+
+    auto raw = [this] (const juce::String& pidStr) { return apvts.getRawParameterValue (pidStr); };
+    for (int b = 0; b < bb::eq::kBands; ++b)
+    {
+        pEq.freq[(size_t) b] = raw (pid::eqFreq (b));
+        pEq.gain[(size_t) b] = raw (pid::eqGain (b));
+        pEq.cut[(size_t) b]  = raw (pid::eqCut (b));
+        if (bb::eq::kRange[b].canShelf) pEq.shelf[(size_t) b] = raw (pid::eqShelf (b));
+    }
+    pEq.warm = raw (pid::eqWarm); pEq.hpf = raw (pid::eqHpf); pEq.hpf24 = raw (pid::eqHpf24);
+    pEq.lpf = raw (pid::eqLpf); pEq.mono = raw (pid::eqMono); pEq.out = raw (pid::eqOut);
+    pTape = { raw (pid::tapeSpeed), raw (pid::tapeEq), raw (pid::tapeType), raw (pid::tapeBias),
+              raw (pid::tapeIn), raw (pid::tapeOut), raw (pid::tapeLink), raw (pid::tapeWow) };
+}
+
+bb::eq::Settings BigBossProcessor::eqSettings() const
+{
+    bb::eq::Settings s;
+    for (size_t b = 0; b < (size_t) bb::eq::kBands; ++b)
+    {
+        s.band[b].freq  = pEq.freq[b]->load();
+        s.band[b].gain  = pEq.gain[b]->load();
+        s.band[b].cut   = pEq.cut[b]->load() > 0.5f;
+        s.band[b].shelf = pEq.shelf[b] != nullptr && pEq.shelf[b]->load() > 0.5f;
+    }
+    s.warm = pEq.warm->load() > 0.5f;
+    s.hpfHz = pEq.hpf->load();
+    s.hpfOrder = pEq.hpf24->load() > 0.5f ? 4 : 2;
+    s.lpfHz = pEq.lpf->load();
+    s.monoBassHz = pEq.mono->load();
+    s.outputDb = pEq.out->load();
+    return s;
+}
+
+bb::TapeMachine::Settings BigBossProcessor::tapeSettings() const
+{
+    bb::TapeMachine::Settings s;
+    s.speed    = juce::roundToInt (pTape.speed->load());
+    s.standard = juce::roundToInt (pTape.standard->load());
+    s.tape     = juce::roundToInt (pTape.type->load());
+    s.bias     = juce::roundToInt (pTape.bias->load());
+    s.inputDb  = pTape.in->load();
+    s.outputDb = pTape.out->load();
+    s.link     = pTape.link->load() > 0.5f;
+    s.wow      = pTape.wow->load() / 100.0;
+    return s;
 }
 
 bool BigBossProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -65,7 +108,8 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     const int block = juce::jmax (64, samplesPerBlock);
     bufL.assign ((size_t) block, 0.0);
     bufR.assign ((size_t) block, 0.0);
-    tape->amount.store (pTape->load() / 100.0);
+    eq->settings = eqSettings();
+    tape->settings = tapeSettings();
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     chain.prepare (sampleRate, block);
     const int nch = juce::jmax (1, getTotalNumInputChannels());
@@ -103,7 +147,8 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
     for (int c = nIn; c < buffer.getNumChannels(); ++c) buffer.clear (c, 0, n);
     if (nIn == 0 || bufL.empty()) return;
 
-    tape->amount.store (pTape->load() / 100.0);
+    eq->settings = eqSettings();
+    tape->settings = tapeSettings();
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     const double inTarget  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
     const double outTarget = juce::Decibels::decibelsToGain ((double) pOutTrim->load());
