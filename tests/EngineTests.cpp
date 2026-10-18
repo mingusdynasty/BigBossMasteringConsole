@@ -302,7 +302,7 @@ static void testTapeLatency()
     {
         bb::Chain c;
         auto* t = new bb::TapeModule();
-        t->amount.store (0.0);
+        t->settings.wow = 0.0;
         c.add (std::unique_ptr<bb::Module> (t));
         c.prepare (sr, 512);
         std::mt19937 rng (7);

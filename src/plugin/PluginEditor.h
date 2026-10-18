@@ -4,8 +4,12 @@
 #include "ui/ChainStrip.h"
 #include "ui/Look.h"
 #include "ui/MeterPanel.h"
+#include "ui/MeterStrip.h"
+#include "ui/Rack.h"
 #include "ui/Spectrum.h"
 
+// The console: header, chain strip and a row of tabs. ANALYSIS is the metering dashboard; every
+// module has its own tab, drawn as a rack unit, with a slim loudness and peak strip under it.
 class BigBossEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -15,6 +19,9 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void refreshNow() { timerCallback(); }   // one meter frame, without waiting for the timer (snapshot tool)
+    void showTab (int tab);                  // 0 = analysis, 1 + slot index = that module
+
+    static constexpr int kNumTabs = 1 + BigBossProcessor::kNumSlots;
 
 private:
     void timerCallback() override;
@@ -31,15 +38,24 @@ private:
     BigBossProcessor& proc;
     bbui::Look look;
     bbui::ChainStrip chain;
+    std::array<juce::TextButton, kNumTabs> tabs;
+    int tab = 0;
+
+    // analysis
     bbui::MeterPanel meters;
     bbui::Spectrum spectrum;
     bbui::Goniometer gonio;
-    Knob inTrim, tapeDrive, outTrim;
+    Knob inTrim, outTrim;
+    juce::Rectangle<int> knobArea;
+
+    // modules, by slot index
+    std::array<std::unique_ptr<bbui::rack::Unit>, BigBossProcessor::kNumSlots> units;
+    bbui::MeterStrip strip;
+
     juce::TextButton inButton { "IN" }, outButton { "OUT" }, resetButton { "RESET" };
     juce::ComboBox target;
     bool showingOutput = true;
     double shownRate = 0;
-    juce::Rectangle<int> knobArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BigBossEditor)
 };

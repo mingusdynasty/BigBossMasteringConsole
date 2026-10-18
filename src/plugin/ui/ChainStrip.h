@@ -1,4 +1,4 @@
-// The chain as a row of modules: drag one to reorder, click its lamp to bypass it.
+// The chain as a row of modules: click one to open its tab, drag it to reorder, click its lamp to bypass it.
 #pragma once
 
 #include "Look.h"
@@ -18,6 +18,8 @@ public:
     std::function<void (const std::vector<int>&)> setOrder;
     std::function<bool (int)> isBypassed;
     std::function<void (int)> toggleBypass;
+    std::function<void (int)> onSelect;            // a module was clicked (not dragged)
+    int selected = -1;                             // slot whose tab is showing, outlined
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;

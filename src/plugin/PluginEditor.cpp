@@ -1,6 +1,15 @@
 #include "PluginEditor.h"
 
+#include "Params.h"
+#include "ui/EqUnit.h"
+#include "ui/TapeUnit.h"
+
 using namespace bbui;
+
+namespace
+{
+const char* const kTabNames[BigBossEditor::kNumTabs] = { "ANALYSIS", "EQ", "COMP", "TAPE", "DE-ESS", "LIMIT" };
+}
 
 BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), proc (p)
 {
@@ -30,11 +39,43 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), 
             prm->endChangeGesture();
         }
     };
+    chain.onSelect = [this] (int s) { showTab (1 + s); };
     addAndMakeVisible (chain);
 
-    setupKnob (inTrim, BigBossProcessor::kInTrimId, "INPUT");
-    setupKnob (tapeDrive, BigBossProcessor::kTapeAmountId, "TAPE DRIVE");
-    setupKnob (outTrim, BigBossProcessor::kOutTrimId, "OUTPUT");
+    for (int t = 0; t < kNumTabs; ++t)
+    {
+        auto& b = tabs[(size_t) t];
+        b.setButtonText (kTabNames[t]);
+        b.setClickingTogglesState (false);
+        b.onClick = [this, t] { showTab (t); };
+        addAndMakeVisible (b);
+    }
+
+    setupKnob (inTrim, pid::inTrim, "INPUT");
+    setupKnob (outTrim, pid::outTrim, "OUTPUT");
+
+    for (int s = 0; s < BigBossProcessor::kNumSlots; ++s)
+    {
+        const juce::String id (BigBossProcessor::kSlots[s].id);
+        std::unique_ptr<rack::Unit> u;
+        if (id == "eq")
+            u = std::make_unique<rack::EqUnit> (proc.apvts, [this] { return proc.eqSettings(); });
+        else if (id == "tape")
+            u = std::make_unique<rack::TapeUnit> (proc.apvts, proc.tapeMachine(), [this] { return proc.tapeSettings(); });
+        else
+        {
+            const juce::String titles[] = { "", "MASTERING COMPRESSOR", "", "MULTIBAND DE-ESSER", "MASTERING LIMITER" };
+            u = std::make_unique<rack::BlankUnit> (titles[s], BigBossProcessor::kSlots[s].comingIn);
+        }
+        if (proc.slotIsBuilt (s))
+        {
+            u->isIn = [this, s] { return ! chain.isBypassed (s); };
+            u->toggleIn = [this, s] { chain.toggleBypass (s); chain.repaint(); };
+        }
+        addChildComponent (*u);
+        units[(size_t) s] = std::move (u);
+    }
+    addChildComponent (strip);
 
     for (auto* b : { &inButton, &outButton })
     {
@@ -56,7 +97,7 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), 
     target.onChange = [this, targets]
     {
         const int i = target.getSelectedId() - 1;
-        if (i >= 0 && i < 5) meters.targetLufs = targets[i].second;
+        if (i >= 0 && i < 5) meters.targetLufs = strip.targetLufs = targets[i].second;
     };
     addAndMakeVisible (target);
 
@@ -65,10 +106,29 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), 
     addAndMakeVisible (gonio);
     useSource (true);
 
-    // last, so every child (the knobs' text boxes too) is rebuilt with the console's look
+    // last, so every child (the knobs' text boxes too) is rebuilt with the console's look; the rack
+    // units keep their own
     setLookAndFeel (&look);
-    setSize (1180, 720);
+    setSize (1180, 760);
+    showTab (proc.editorTab);
     startTimerHz (30);
+}
+
+void BigBossEditor::showTab (int t)
+{
+    tab = juce::jlimit (0, kNumTabs - 1, t);
+    proc.editorTab = tab;
+    for (int i = 0; i < kNumTabs; ++i) tabs[(size_t) i].setToggleState (i == tab, juce::dontSendNotification);
+    const bool analysis = tab == 0;
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &meters, &spectrum, &gonio, &inTrim.slider, &inTrim.label,
+                                                                         &outTrim.slider, &outTrim.label })
+        c->setVisible (analysis);
+    for (int s = 0; s < BigBossProcessor::kNumSlots; ++s) units[(size_t) s]->setVisible (tab == 1 + s);
+    strip.setVisible (! analysis);
+    chain.selected = analysis ? -1 : tab - 1;
+    if (! analysis) units[(size_t) tab - 1]->tick();
+    chain.repaint();
+    repaint();
 }
 
 BigBossEditor::~BigBossEditor()
@@ -95,6 +155,7 @@ void BigBossEditor::useSource (bool output)
     auto* m = output ? &proc.outMeters : &proc.inMeters;
     shownRate = proc.sampleRateHz.load();
     meters.setSource (m);
+    strip.setSource (m, output ? "OUT" : "IN");
     spectrum.setSource (m, shownRate);
     gonio.setSource (m);
     inButton.setToggleState (! output, juce::dontSendNotification);
@@ -104,9 +165,17 @@ void BigBossEditor::useSource (bool output)
 void BigBossEditor::timerCallback()
 {
     if (std::abs (proc.sampleRateHz.load() - shownRate) > 0.5) useSource (showingOutput);
-    meters.tick();
-    spectrum.tick();
-    gonio.tick();
+    meters.tick();   // always, so the loudness history has no gap when the tab comes back
+    if (tab == 0)
+    {
+        spectrum.tick();
+        gonio.tick();
+    }
+    else
+    {
+        units[(size_t) tab - 1]->tick();
+        strip.tick (meters.truePeakBar (0), meters.truePeakBar (1));
+    }
     chain.repaint();
 }
 
@@ -120,8 +189,11 @@ void BigBossEditor::paint (juce::Graphics& g)
     g.setColour (col::amber);
     g.setFont (font (13.0f));
     g.drawText ("MASTERING CONSOLE", header.removeFromLeft (180), juce::Justification::centredLeft);
-    g.setColour (col::panel);
-    g.fillRoundedRectangle (knobArea.toFloat(), 6.0f);
+    if (tab == 0)
+    {
+        g.setColour (col::panel);
+        g.fillRoundedRectangle (knobArea.toFloat(), 6.0f);
+    }
 }
 
 void BigBossEditor::resized()
@@ -138,9 +210,23 @@ void BigBossEditor::resized()
 
     r.reduce (16, 0);
     chain.setBounds (r.removeFromTop (60));
-    r.removeFromTop (12);
+    r.removeFromTop (10);
+    auto tabRow = r.removeFromTop (26);
+    for (auto& b : tabs)
+    {
+        b.setBounds (tabRow.removeFromLeft (96));
+        tabRow.removeFromLeft (4);
+    }
+    r.removeFromTop (10);
     r.removeFromBottom (16);
 
+    // module tabs: the rack unit over the meter strip
+    auto rackArea = r;
+    strip.setBounds (rackArea.removeFromBottom (40));
+    rackArea.removeFromBottom (10);
+    for (auto& u : units) u->setBounds (rackArea);
+
+    // analysis
     auto left = r.removeFromLeft (520);
     meters.setBounds (left);
     r.removeFromLeft (12);
@@ -149,8 +235,8 @@ void BigBossEditor::resized()
     gonio.setBounds (lower.removeFromLeft (230));
     lower.removeFromLeft (12);
     knobArea = lower;
-    const int kw = lower.getWidth() / 3;
-    for (auto* k : { &inTrim, &tapeDrive, &outTrim })
+    const int kw = lower.getWidth() / 2;
+    for (auto* k : { &inTrim, &outTrim })
     {
         auto a = lower.removeFromLeft (kw).reduced (6, 10);
         k->label.setBounds (a.removeFromTop (16));

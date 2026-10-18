@@ -57,8 +57,8 @@ void ChainStrip::paint (juce::Graphics& g)
 
         g.setColour (lifted ? col::panelHi.brighter (0.1f) : col::panelHi);
         g.fillRoundedRectangle (c, 5.0f);
-        g.setColour (lifted ? col::amber : col::edge);
-        g.drawRoundedRectangle (c.reduced (0.5f), 5.0f, 1.0f);
+        g.setColour (lifted || s == selected ? col::amber : col::edge);
+        g.drawRoundedRectangle (c.reduced (0.5f), 5.0f, s == selected ? 1.5f : 1.0f);
 
         auto text = c.reduced (12.0f, 8.0f);
         g.setColour (info.built && ! bypassed ? col::legend : col::dim);
@@ -123,6 +123,8 @@ void ChainStrip::mouseUp (const juce::MouseEvent&)
         order.insert (order.begin() + positionAt (dragX), dragSlot);
         setOrder (order);
     }
+    else if (dragSlot >= 0 && onSelect)
+        onSelect (dragSlot);
     dragging = false;
     dragSlot = dragFrom = -1;
     repaint();

@@ -4,6 +4,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "chain/Chain.h"
+#include "chain/EqModule.h"
 #include "chain/TapeModule.h"
 #include "meter/MeterSuite.h"
 
@@ -48,27 +49,43 @@ public:
     static const SlotInfo kSlots[kNumSlots];
 
     static juce::String bypassId (int slot) { return juce::String (kSlots[slot].id) + "_bypass"; }
-    static constexpr auto kInTrimId = "in_trim", kOutTrimId = "out_trim", kTapeAmountId = "tape_amount";
 
     // chain order, from the editor (message thread); saved with the session
     bb::Chain::Order getOrder() const { return chain.order(); }
     void setOrder (const bb::Chain::Order& o);
     bool slotIsBuilt (int slot) const { return std::strlen (kSlots[slot].comingIn) == 0; }
 
+    // the modules' settings as the parameters stand now; safe from any thread
+    bb::eq::Settings eqSettings() const;
+    bb::TapeMachine::Settings tapeSettings() const;
+    const bb::TapeMachine& tapeMachine() const { return tape->machine; }
+
     juce::AudioProcessorValueTreeState apvts;
     bb::MeterSuite inMeters, outMeters;
     std::atomic<double> sampleRateHz { 48000.0 };
+    int editorTab = 0;   // the tab the editor last showed, so reopening it lands there
 
 private:
     template <typename T> void processImpl (juce::AudioBuffer<T>& buffer);
     template <typename T> void bypassImpl (juce::AudioBuffer<T>& buffer);
 
     bb::Chain chain;
+    bb::EqModule* eq = nullptr;
     bb::TapeModule* tape = nullptr;
     std::array<std::atomic<float>*, kNumSlots> pBypass {};
     std::atomic<float>* pInTrim = nullptr;
     std::atomic<float>* pOutTrim = nullptr;
-    std::atomic<float>* pTape = nullptr;
+
+    struct EqParams
+    {
+        std::array<std::atomic<float>*, bb::eq::kBands> freq {}, gain {}, cut {}, shelf {};   // shelf: outer bands only
+        std::atomic<float>* warm = nullptr, *hpf = nullptr, *hpf24 = nullptr, *lpf = nullptr, *mono = nullptr, *out = nullptr;
+    } pEq;
+    struct TapeParams
+    {
+        std::atomic<float>* speed = nullptr, *standard = nullptr, *type = nullptr, *bias = nullptr,
+                          *in = nullptr, *out = nullptr, *link = nullptr, *wow = nullptr;
+    } pTape;
 
     std::vector<double> bufL, bufR;
     double inGain = 1, outGain = 1;
