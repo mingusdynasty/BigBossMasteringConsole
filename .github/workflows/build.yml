@@ -1,0 +1,73 @@
+name: Build
+
+# Manual only: nothing here runs on push or pull request, so it costs no Actions minutes unless you
+# start it (Actions -> Build -> Run workflow). Day to day, build and test locally (see README).
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Platforms to build"
+        type: choice
+        options: [windows, all]
+        default: windows
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.platforms == 'all' && '[{"name":"Windows","os":"windows-latest","pluginval":"pluginval_Windows.zip","pluginval_bin":"./pluginval.exe"},{"name":"macOS","os":"macos-14","pluginval":"pluginval_macOS.zip","pluginval_bin":"./pluginval.app/Contents/MacOS/pluginval"},{"name":"Linux","os":"ubuntu-22.04","pluginval":"pluginval_Linux.zip","pluginval_bin":"./pluginval"}]' || '[{"name":"Windows","os":"windows-latest","pluginval":"pluginval_Windows.zip","pluginval_bin":"./pluginval.exe"}]') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+            libxrandr-dev libxrender-dev libgl1-mesa-dev xvfb
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Engine tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Validate with pluginval
+        shell: bash
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/download/v1.0.4/${{ matrix.pluginval }}
+          unzip -q pluginval.zip
+          VST3="build/BigBoss_artefacts/Release/VST3/Big Boss Mastering Console.vst3"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a ${{ matrix.pluginval_bin }} --strictness-level 10 --validate-in-process --timeout-ms 600000 "$VST3"
+          else
+            ${{ matrix.pluginval_bin }} --strictness-level 10 --validate-in-process --timeout-ms 600000 "$VST3"
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cd build/BigBoss_artefacts/Release
+          N="Big Boss Mastering Console"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ditto -c -k --keepParent "VST3/$N.vst3" "$GITHUB_WORKSPACE/dist/BigBoss-macOS-VST3.zip"
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "$GITHUB_WORKSPACE/dist/BigBoss-Windows-VST3.zip" "./VST3/$N.vst3"
+          else
+            (cd VST3 && zip -qr "$GITHUB_WORKSPACE/dist/BigBoss-Linux-VST3.zip" "$N.vst3")
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BigBoss-${{ matrix.name }}
+          path: dist/*.zip
+          retention-days: 7

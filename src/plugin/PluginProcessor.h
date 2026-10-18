@@ -1,0 +1,81 @@
+// Big Boss Mastering Console: the JUCE side. Builds the chain, maps parameters, runs the meters.
+#pragma once
+
+#include <juce_audio_processors/juce_audio_processors.h>
+
+#include "chain/Chain.h"
+#include "chain/TapeModule.h"
+#include "meter/MeterSuite.h"
+
+class BigBossProcessor final : public juce::AudioProcessor
+{
+public:
+    BigBossProcessor();
+
+    void prepareToPlay (double sampleRate, int samplesPerBlock) override;
+    void releaseResources() override {}
+    void reset() override;
+    bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
+
+    void processBlock (juce::AudioBuffer<float>&,  juce::MidiBuffer&) override;
+    void processBlock (juce::AudioBuffer<double>&, juce::MidiBuffer&) override;
+    bool supportsDoublePrecisionProcessing() const override { return true; }
+    // the host's bypass: the dry signal is delayed by the chain's latency, so nothing shifts in time
+    void processBlockBypassed (juce::AudioBuffer<float>&,  juce::MidiBuffer&) override;
+    void processBlockBypassed (juce::AudioBuffer<double>&, juce::MidiBuffer&) override;
+
+    juce::AudioProcessorEditor* createEditor() override;
+    bool hasEditor() const override { return true; }
+
+    const juce::String getName() const override { return JucePlugin_Name; }
+    bool acceptsMidi() const override  { return false; }
+    bool producesMidi() const override { return false; }
+    bool isMidiEffect() const override { return false; }
+    double getTailLengthSeconds() const override { return 0.0; }
+
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram (int) override {}
+    const juce::String getProgramName (int) override { return {}; }
+    void changeProgramName (int, const juce::String&) override {}
+
+    void getStateInformation (juce::MemoryBlock& destData) override;
+    void setStateInformation (const void* data, int sizeInBytes) override;
+
+    // the console's slots, in their default order; ids are used in parameter ids and saved state
+    struct SlotInfo { const char* id; const char* name; const char* comingIn; };
+    static constexpr int kNumSlots = 5;
+    static const SlotInfo kSlots[kNumSlots];
+
+    static juce::String bypassId (int slot) { return juce::String (kSlots[slot].id) + "_bypass"; }
+    static constexpr auto kInTrimId = "in_trim", kOutTrimId = "out_trim", kTapeAmountId = "tape_amount";
+
+    // chain order, from the editor (message thread); saved with the session
+    bb::Chain::Order getOrder() const { return chain.order(); }
+    void setOrder (const bb::Chain::Order& o);
+    bool slotIsBuilt (int slot) const { return std::strlen (kSlots[slot].comingIn) == 0; }
+
+    juce::AudioProcessorValueTreeState apvts;
+    bb::MeterSuite inMeters, outMeters;
+    std::atomic<double> sampleRateHz { 48000.0 };
+
+private:
+    template <typename T> void processImpl (juce::AudioBuffer<T>& buffer);
+    template <typename T> void bypassImpl (juce::AudioBuffer<T>& buffer);
+
+    bb::Chain chain;
+    bb::TapeModule* tape = nullptr;
+    std::array<std::atomic<float>*, kNumSlots> pBypass {};
+    std::atomic<float>* pInTrim = nullptr;
+    std::atomic<float>* pOutTrim = nullptr;
+    std::atomic<float>* pTape = nullptr;
+
+    std::vector<double> bufL, bufR;
+    double inGain = 1, outGain = 1;
+    int latency = 0;
+
+    std::array<std::vector<double>, 2> bypassLine;
+    int bypassPos = 0, bypassMask = 0;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BigBossProcessor)
+};
