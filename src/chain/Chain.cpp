@@ -79,7 +79,8 @@ void Chain::prepare (double sampleRate, int maxBlockSize)
         }
     }
     bypassStep = 1.0 / std::max (1.0, 0.010 * sampleRate);
-    fadeStep   = 1.0 / std::max (1.0, 0.005 * sampleRate);
+    fadeStep   = 1.0 / std::max (1.0, 0.010 * sampleRate);
+    settleSamples = (int) (0.010 * sampleRate);
     reset();
 }
 
@@ -172,13 +173,17 @@ void Chain::process (double* l, double* r, int n)
                     break;
                 case Phase::Running: break;
             }
-            bl[i] *= gain;
-            br[i] *= gain;
+            // raised-cosine fades: a linear ramp's corners are audible as soft ticks
+            const double g = 0.5 - 0.5 * std::cos (gain * 3.14159265358979323846);
+            bl[i] *= g;
+            br[i] *= g;
         }
         if (phase == Phase::Holding && holdLeft < 0)
         {
             active = pending.load (std::memory_order_acquire);
-            holdLeft = totalLatency + 1;   // let what was already inside the chain flush out
+            // let what was already inside the chain flush out, and the modules' filters and envelopes
+            // settle on their new inputs, before fading back in
+            holdLeft = totalLatency + settleSamples + 1;
         }
     }
 }

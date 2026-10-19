@@ -22,7 +22,11 @@ namespace col
 }
 
 juce::Font font (float height, bool bold = false);
-juce::Font mono (float height);   // numbers that must not jitter as they change
+juce::Font mono (float height);   // the readout face: the bundled Barlow, so it measures the same on every system
+
+// draws a number with every digit in a cell of the same width, so readouts don't jitter as they
+// change (Barlow's figures are proportional); justified like Graphics::drawText
+void drawTabular (juce::Graphics&, const juce::String& text, juce::Rectangle<float> area, juce::Justification);
 
 // map a value in dB onto 0..1 of a meter scale
 inline float norm (float v, float lo, float hi) { return juce::jlimit (0.0f, 1.0f, (v - lo) / (hi - lo)); }

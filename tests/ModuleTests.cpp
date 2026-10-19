@@ -1,4 +1,10 @@
 // Module tests (no JUCE): the Class-A EQ and the tape machine. Run via ctest.
+#include "chain/Chain.h"
+#include "chain/CompModule.h"
+#include "chain/DeEssModule.h"
+#include "chain/EqModule.h"
+#include "chain/LimitModule.h"
+#include "chain/TapeModule.h"
 #include "eq/ClassAEq.h"
 #include "tape/TapeMachine.h"
 
@@ -299,10 +305,72 @@ static void testTape()
     }
 }
 
+// reordering the full chain, every module working hard, makes no click: on two low tones the
+// high-frequency residue (a 4th difference) around the switch stays within that of the steady
+// sound after it
+static void testReorder()
+{
+    for (double sr : { 44100.0, 96000.0 })
+    {
+        bb::Chain chain;
+        auto* eq = new bb::EqModule(); auto* comp = new bb::CompModule(); auto* tape = new bb::TapeModule();
+        auto* ds = new bb::DeEssModule(); auto* lim = new bb::LimitModule();
+        eq->settings.band[0] = { 60, 4, false, true };
+        eq->settings.band[2] = { 1000, 6, false, false };
+        eq->settings.band[4] = { 10000, 4, false, true };
+        eq->settings.hpfHz = 25;
+        eq->settings.monoBassHz = 120;
+        comp->settings.optoThreshold = -24;
+        comp->settings.vcaThreshold = -20;
+        tape->settings.inputDb = 6;
+        ds->settings.thresholdDb = -12;
+        lim->settings.driveDb = 8;
+        for (bb::Module* m : std::initializer_list<bb::Module*> { eq, comp, tape, ds, lim }) chain.add (std::unique_ptr<bb::Module> (m));
+        const int block = 256;
+        chain.prepare (sr, block);
+
+        const int n = (int) (sr * 3.0), sw = (int) (sr * 1.5) / block * block;
+        std::vector<double> l ((size_t) n), r ((size_t) n);
+        for (int i = 0; i < n; ++i)
+        {
+            const double t = i / sr;
+            l[(size_t) i] = 0.3 * std::sin (2 * kPi * 110 * t) + 0.2 * std::sin (2 * kPi * 330 * t + 1);
+            r[(size_t) i] = 0.3 * std::sin (2 * kPi * 110 * t + 0.3) + 0.2 * std::sin (2 * kPi * 330 * t);
+        }
+        for (int off = 0; off < n; off += block)
+        {
+            if (off == sw) { bb::Chain::Order o {}; const int p[5] = { 4, 2, 0, 3, 1 }; for (int k = 0; k < 5; ++k) o[(size_t) k] = p[k]; chain.setOrder (o); }
+            chain.process (l.data() + off, r.data() + off, std::min (block, n - off));
+        }
+        auto residue = [&] (int from, int to)
+        {
+            double worst = 0;
+            const int w = (int) (sr * 0.001);
+            for (int a = from; a + w + 4 < to; a += w)
+            {
+                double e = 0;
+                for (int i = a; i < a + w; ++i)
+                    for (auto* x : { &l, &r })
+                    {
+                        const auto* v = x->data() + i;
+                        const double d = v[4] - 4 * v[3] + 6 * v[2] - 4 * v[1] + v[0];
+                        e += d * d;
+                    }
+                worst = std::max (worst, std::sqrt (e / (2 * w)));
+            }
+            return worst;
+        };
+        const double around = residue (sw - (int) (sr * 0.01), sw + (int) (sr * 0.2));
+        const double after = residue (sw + (int) (sr * 0.5), n - 8);
+        CHECK (around < 2.0 * after, "reorder at %.0f: residue %.3g around the switch, %.3g steady after", sr, around, after);
+    }
+}
+
 int main()
 {
     testEq();
     testTape();
+    testReorder();
     std::printf ("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

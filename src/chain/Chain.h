@@ -4,8 +4,9 @@
 //   delay compensation stays put. A bypassed module's dry path is delayed by that module's latency.
 // - Bypass crossfades over 10 ms between the module and its delayed dry path. Bypassed modules keep
 //   running, so switching back in is seamless (their filters and envelopes are already settled).
-// - A new order is applied behind a short mute: fade out (5 ms), switch, hold until the audio already in
-//   flight has cleared the chain's latency, fade in (5 ms).
+// - A new order is applied behind a short mute: fade out (10 ms, raised cosine), switch, hold until the
+//   audio already in flight has cleared the chain's latency and the modules have settled on their new
+//   inputs (10 ms more), fade in (10 ms).
 // - Bypass and order can be set from any thread; they take effect at the next block.
 #pragma once
 
@@ -64,6 +65,6 @@ private:
     int totalLatency = 0, maxBlock = 512;
     double fadeStep = 0.01, bypassStep = 0.01, gain = 1.0;
     enum class Phase { Running, FadingOut, Holding, FadingIn } phase = Phase::Running;
-    int holdLeft = 0;
+    int holdLeft = 0, settleSamples = 480;
 };
 } // namespace bb
