@@ -23,6 +23,22 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 }
 }
 
+namespace
+{
+double volumeGain (float db) { return db <= pid::volumeMinDb ? 0.0 : juce::Decibels::decibelsToGain ((double) db); }
+
+void notePeaks (std::array<std::atomic<float>, 2>& peak, const double* l, const double* r, int n)
+{
+    const double* ch[2] = { l, r };
+    for (int c = 0; c < 2; ++c)
+    {
+        double m = 0;
+        for (int i = 0; i < n; ++i) m = std::max (m, std::abs (ch[c][i]));
+        if ((float) m > peak[(size_t) c].load (std::memory_order_relaxed)) peak[(size_t) c].store ((float) m, std::memory_order_relaxed);
+    }
+}
+}
+
 BigBossProcessor::BigBossProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
@@ -62,7 +78,7 @@ BigBossProcessor::BigBossProcessor()
         pBypass[(size_t) s] = apvts.getRawParameterValue (bypassId (s));
     }
     pInTrim  = apvts.getRawParameterValue (pid::inTrim);
-    pOutTrim = apvts.getRawParameterValue (pid::outTrim);
+    pVolume  = apvts.getRawParameterValue (pid::volume);
 
     auto raw = [this] (const juce::String& pidStr) { return apvts.getRawParameterValue (pidStr); };
     for (int b = 0; b < bb::eq::kBands; ++b)
@@ -191,7 +207,7 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     for (auto& l : bypassLine) l.assign ((size_t) len, 0.0);
     bypassPos = 0;
     inGain  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
-    outGain = juce::Decibels::decibelsToGain ((double) pOutTrim->load());
+    outGain = volumeGain (pVolume->load());
 }
 
 void BigBossProcessor::reset()
@@ -203,6 +219,12 @@ void BigBossProcessor::reset()
 void BigBossProcessor::setOrder (const bb::Chain::Order& o)
 {
     chain.setOrder (o);
+}
+
+float BigBossProcessor::takePeakDb (bool output, int ch)
+{
+    const float p = (output ? outPeak : inPeak)[(size_t) juce::jlimit (0, 1, ch)].exchange (0.0f, std::memory_order_relaxed);
+    return p > 1e-5f ? juce::Decibels::gainToDecibels (p) : -100.0f;
 }
 
 template <typename T>
@@ -221,7 +243,7 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
     deess->settings = deessSettings();
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     const double inTarget  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
-    const double outTarget = juce::Decibels::decibelsToGain ((double) pOutTrim->load());
+    const double outTarget = volumeGain (pVolume->load());
 
     T* outL = buffer.getWritePointer (0);
     T* outR = nIn > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -234,6 +256,7 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
         for (int i = 0; i < k; ++i) { l[i] = (double) outL[off + i]; r[i] = outR ? (double) outR[off + i] : l[i]; }
 
         inMeters.process (l, outR ? r : l, k);
+        notePeaks (inPeak, l, outR ? r : l, k);
 
         // trims glide linearly across the chunk
         const double gi = (inTarget - inGain) / k, go = (outTarget - outGain) / k;
@@ -246,6 +269,7 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
         outGain = outTarget;
 
         outMeters.process (l, outR ? r : l, k);
+        notePeaks (outPeak, l, outR ? r : l, k);
 
         for (int i = 0; i < k; ++i) outL[off + i] = (T) l[i];
         if (outR) for (int i = 0; i < k; ++i) outR[off + i] = (T) r[i];

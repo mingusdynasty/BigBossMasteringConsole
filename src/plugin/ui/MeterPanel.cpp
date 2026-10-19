@@ -55,7 +55,7 @@ void MeterPanel::paintReadout (juce::Graphics& g, juce::Rectangle<int> r, const 
     g.setColour (c);
     g.setFont (mono (valueHeight));
     auto valueArea = in;
-    g.drawText (value, valueArea.removeFromLeft (in.getWidth() - 34), juce::Justification::bottomLeft);
+    drawTabular (g, value, valueArea.removeFromLeft (in.getWidth() - 34).toFloat(), juce::Justification::bottomLeft);
     g.setColour (col::dim);
     g.setFont (font (11.0f));
     g.drawText (unit, valueArea, juce::Justification::bottomRight);
@@ -203,7 +203,7 @@ void MeterPanel::paint (juce::Graphics& g)
         auto valueArea = corrArea.removeFromRight (44);
         g.setColour (corr < 0 ? col::red : col::legend);
         g.setFont (mono (12.0f));
-        g.drawText (juce::String (corr, 2), valueArea, juce::Justification::right);
+        drawTabular (g, juce::String (corr, 2), valueArea.toFloat(), juce::Justification::centredRight);
         g.setColour (col::bg);
         g.fillRect (corrArea);
         const float cx = (float) corrArea.getCentreX();
@@ -223,7 +223,7 @@ void MeterPanel::paint (juce::Graphics& g)
         g.setFont (mono (12.0f));
         g.setColour (col::legend);
         const juce::String widthText = width < -60 ? "mono" : ("S/M " + juce::String (width, 1) + " dB");
-        g.drawText (widthText, valueArea, juce::Justification::right);
+        drawTabular (g, widthText, valueArea.toFloat(), juce::Justification::centredRight);
         g.setColour (col::bg);
         g.fillRect (balArea);
         const float cx = (float) balArea.getCentreX();

@@ -1,0 +1,250 @@
+// The console as a rack, in the manner of the owner's Vocal Chain plugin: one 1U faceplate per
+// module in chain order, then the output fader. The analyser is a 5U unit that takes the modules'
+// place when it is switched on. Everything is laid out in a fixed design space and the editor
+// scales the whole rack.
+#pragma once
+
+#include "Widgets.h"
+#include "deess/DeEsser.h"
+#include "dyn/DualCompressor.h"
+#include "dyn/Limiter.h"
+#include "plugin/ui/MeterPanel.h"
+#include "plugin/ui/Spectrum.h"
+#include "tape/TapeMachine.h"
+
+#include <array>
+#include <functional>
+#include <memory>
+#include <vector>
+
+class BigBossProcessor;
+
+namespace kit
+{
+inline constexpr int unitHeight = 118;
+inline constexpr int earWidth = 44;
+inline constexpr int rackWidth = 1280;
+inline constexpr int panelWidth = rackWidth - 2 * earWidth;
+inline constexpr int nameWidth = 150;   // the name plate at the left of each faceplate
+
+using Apvts = juce::AudioProcessorValueTreeState;
+
+class Panel : public juce::Component
+{
+public:
+    explicit Panel (Apvts& s) : state (s) {}
+
+    virtual void tick (float /*seconds*/) {}   // once per editor frame
+
+    // dragging a module by its name plate moves it in the chain: dy from where the drag started
+    std::function<void (int dy)> onDrag;
+    std::function<void()> onDrop;
+
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+
+protected:
+    struct Knob
+    {
+        std::unique_ptr<juce::Slider> slider;
+        std::unique_ptr<Apvts::SliderAttachment> attachment;
+        int size = 60;
+        juce::String paramId;
+    };
+    struct Switch
+    {
+        std::unique_ptr<juce::ToggleButton> button;
+        std::unique_ptr<Apvts::ButtonAttachment> attachment;
+        std::unique_ptr<juce::ParameterAttachment> inverted;
+    };
+
+    Knob& addKnob (const juce::String& paramId, KnobStyle, int size, const juce::String& tooltip, bool detents = false);
+    Switch& addSwitch (const juce::String& paramId, ButtonStyle, const juce::String& text, const juce::String& tooltip, bool invert = false);
+    Switch& addPower (const juce::String& bypassParamId);   // lamp lit while the module is in
+    ChoiceButtons& addChoice (const juce::String& paramId, const juce::StringArray& labels, ButtonStyle, bool vertical,
+                              const juce::String& tooltip);
+
+    void placeKnob (Knob&, juce::Point<int> centre);
+    std::vector<std::pair<float, juce::String>> marksFor (const juce::String& paramId,
+                                                          const std::vector<std::pair<float, juce::String>>& valuesAndLabels) const;
+    void scale (juce::Graphics&, const Knob&, const std::vector<std::pair<float, juce::String>>& valuesAndLabels,
+                juce::Colour ink, float fontHeight = 7.0f) const;
+
+    enum class Finish { brushed, enamel, powder };
+    void paintFinish (juce::Graphics&, juce::Colour base, Finish) const;
+    void nameplate (juce::Graphics&, const juce::String& name, const juce::String& line1, const juce::String& line2,
+                    juce::Colour ink) const;
+    void legendOver (juce::Graphics&, const juce::String& text, int centreX, juce::Colour ink, int y = 4, int width = 110) const;
+    void rule (juce::Graphics&, int x, juce::Colour ink) const;   // a printed divider between sections
+
+    juce::Rectangle<int> nameArea() const { return { 36, 0, nameWidth - 36, getHeight() }; }
+    void placePower (Switch& power) { power.button->setBounds (juce::Rectangle<int> (18, 18).withCentre ({ 22, 59 })); }
+
+    Apvts& state;
+    std::vector<std::unique_ptr<Knob>> knobs;
+    std::vector<std::unique_ptr<Switch>> switches;
+    std::vector<std::unique_ptr<ChoiceButtons>> choices;
+
+private:
+    bool dragging = false;
+};
+
+// ------------------------------------------------------------------- the modules
+
+class EqPanel final : public Panel
+{
+public:
+    explicit EqPanel (Apvts&);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+
+private:
+    Switch* power;
+    std::array<Knob*, 5> freq {}, gain {};
+    std::array<Switch*, 5> cut {};
+    std::array<Switch*, 5> shelf {};   // outer bands only
+    Knob *hpf, *lpf, *mono, *out;
+    Switch *hpf24, *warm;
+};
+
+class CompPanel final : public Panel
+{
+public:
+    CompPanel (Apvts&, const bb::DualCompressor&);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick (float seconds) override;
+
+private:
+    Switch *power, *optoIn, *vcaIn, *scHpf;
+    Knob *optoThr, *optoGain, *vcaThr, *ratio, *attack, *recovery, *vcaGain;
+    ChoiceButtons* xfmr;
+    VuMeter optoMeter, vcaMeter;
+};
+
+class TapePanel final : public Panel
+{
+public:
+    TapePanel (Apvts&, const bb::TapeMachine&);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick (float seconds) override;
+
+private:
+    Switch *power, *link;
+    ChoiceButtons *speed, *eq, *formulation, *bias;
+    Knob *input, *output, *wow;
+    VuMeter vuL, vuR;
+};
+
+// four horizontal LED rows, one per band: reduction 0.5 .. 18 dB with a short peak hold
+class BandLadders final : public juce::Component
+{
+public:
+    void push (int band, float reductionDb, float seconds);
+    void paint (juce::Graphics&) override;
+    std::array<juce::String, bb::DeEsser::kBands> names;
+
+private:
+    std::array<float, bb::DeEsser::kBands> level {}, peak {}, held {};
+};
+
+class DeEssPanel final : public Panel
+{
+public:
+    DeEssPanel (Apvts&, const bb::DeEsser&, std::function<double()> lowestBandHz);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick (float seconds) override;
+
+private:
+    const bb::DeEsser& deesser;
+    std::function<double()> lowestBandHz;
+    Switch *power, *listen;
+    Knob *threshold, *range, *freq, *release;
+    ChoiceButtons* mode;
+    BandLadders ladders;
+};
+
+// the last six seconds of the limiter: input peaks (grey), output peaks (amber), the ceiling,
+// and gain reduction hanging from the top (red)
+class LimitHistory final : public juce::Component
+{
+public:
+    void push (float inDb, float outDb, float reductionDb);
+    void paint (juce::Graphics&) override;
+    float ceilingDb = -1.0f;
+
+private:
+    static constexpr int kFrames = 180;
+    std::array<float, kFrames> in {}, out {}, red {};
+    int pos = 0;
+    bool primed = false;
+};
+
+class LimitPanel final : public Panel
+{
+public:
+    LimitPanel (Apvts&, bb::Limiter&, std::function<bb::Limiter::Settings()> settings);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick (float seconds) override;
+
+private:
+    bb::Limiter& limiter;
+    std::function<bb::Limiter::Settings()> settings;
+    Switch *power, *autoRel, *truePeak;
+    Knob *drive, *ceiling, *release, *link;
+    ChoiceButtons* style;
+    LimitHistory history;
+    VuMeter meter;
+    float lastReduction = 0.0f;
+};
+
+// ------------------------------------------------------------------- output and analyser
+
+class OutputPanel final : public Panel
+{
+public:
+    explicit OutputPanel (BigBossProcessor&);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick (float seconds) override;
+
+    juce::ToggleButton analyserKey { "ANALYSER" };
+
+private:
+    BigBossProcessor& proc;
+    juce::Slider fader { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
+    Apvts::SliderAttachment faderAttachment;
+    Knob* trim;
+    PeakMeter inMeter, outMeter;
+    juce::Label readout;
+    float shortTerm = -200, integrated = -200, truePeak = -200;
+};
+
+class AnalyserPanel final : public Panel
+{
+public:
+    explicit AnalyserPanel (BigBossProcessor&);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick (float seconds) override;   // the loudness history runs whether or not the analyser shows
+    void refreshSource();                 // after a sample-rate change
+
+private:
+    void useSource (bool output);
+
+    BigBossProcessor& proc;
+    bbui::MeterPanel meters;
+    bbui::Spectrum spectrum;
+    bbui::Goniometer gonio;
+    juce::ToggleButton inKey { "IN" }, outKey { "OUT" }, resetKey { "RESET" };
+    juce::ComboBox target;
+    bool showingOutput = true;
+    double shownRate = 0;
+    juce::Rectangle<int> screen, controls;
+};
+} // namespace kit

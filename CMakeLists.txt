@@ -71,21 +71,23 @@ if(BB_BUILD_PLUGIN)
         VST3_CATEGORIES           Fx Mastering Analyzer
         DESCRIPTION               "Mastering console: metering and a hardware-modelled chain")
 
+    # rack panel fonts (Barlow, SIL Open Font License, see resources/fonts)
+    juce_add_binary_data(BigBossFonts HEADER_NAME BigBossFonts.h NAMESPACE BigBossFonts SOURCES
+        resources/fonts/Barlow-SemiBold.ttf
+        resources/fonts/Barlow-Bold.ttf
+        resources/fonts/BarlowCondensed-Bold.ttf)
+
     set(BB_PLUGIN_SOURCES
         src/plugin/PluginProcessor.cpp
         src/plugin/PluginEditor.cpp
         src/plugin/Params.cpp
         src/plugin/ui/Look.cpp
         src/plugin/ui/MeterPanel.cpp
-        src/plugin/ui/MeterStrip.cpp
         src/plugin/ui/Spectrum.cpp
-        src/plugin/ui/ChainStrip.cpp
-        src/plugin/ui/Rack.cpp
-        src/plugin/ui/EqUnit.cpp
-        src/plugin/ui/TapeUnit.cpp
-        src/plugin/ui/CompUnit.cpp
-        src/plugin/ui/LimitUnit.cpp
-        src/plugin/ui/DeEssUnit.cpp)
+        src/plugin/rack/RackLookAndFeel.cpp
+        src/plugin/rack/KnobRenderer.cpp
+        src/plugin/rack/Widgets.cpp
+        src/plugin/rack/Panels.cpp)
     target_sources(BigBoss PRIVATE ${BB_PLUGIN_SOURCES})
 
     target_compile_definitions(BigBoss PUBLIC
@@ -97,6 +99,7 @@ if(BB_BUILD_PLUGIN)
     target_link_libraries(BigBoss
         PRIVATE
             bb_engine
+            BigBossFonts
             juce::juce_audio_utils
             juce::juce_dsp
         PUBLIC
@@ -110,7 +113,7 @@ if(BB_BUILD_PLUGIN)
         target_include_directories(bb_snapshot PRIVATE src)
         target_compile_definitions(bb_snapshot PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
             JucePlugin_Name="Big Boss Mastering Console")
-        target_link_libraries(bb_snapshot PRIVATE bb_engine juce::juce_audio_utils juce::juce_dsp
+        target_link_libraries(bb_snapshot PRIVATE bb_engine BigBossFonts juce::juce_audio_utils juce::juce_dsp
             juce::juce_recommended_config_flags)
     endif()
 endif()
