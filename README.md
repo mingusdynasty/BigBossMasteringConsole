@@ -12,6 +12,8 @@ The console opens on the **ANALYSIS** dashboard. The chain strip doubles as the 
 
 ![Compressor](docs/screenshot-comp.png)
 
+![De-esser](docs/screenshot-deess.png)
+
 ![Limiter](docs/screenshot-limit.png)
 
 ## Plan
@@ -20,14 +22,14 @@ The console opens on the **ANALYSIS** dashboard. The chain strip doubles as the 
 |---|---|---|
 | 1 | Foundation and metering: project, chain host, meters | done |
 | 2 | Elysia museq-style mastering parametric, filters, Studer A80 tape; rack tabs | done |
-| 3 | Shadow Hills-style mastering compressor; our own limiter, scored against FabFilter Pro-L 2 | this version |
-| 4 | A new multiband de-esser; the full console UI | next |
+| 3 | Shadow Hills-style mastering compressor; our own limiter, scored against FabFilter Pro-L 2 | done |
+| 4 | A new multiband de-esser; the full console UI | this version |
 
 None of the hardware has public schematics, so the models are voiced from published specs, manuals and measurements of the units. Each module's notes will say which.
 
 ## The chain
 
-Five slots: **Parametric EQ, Compressor, Tape, De-esser, Limiter**. Click a module to open its rack unit, drag it to reorder it, click its lamp (or the IN lamp on its rack unit) to bypass it. The EQ, Compressor, Tape and Limiter are built; the De-esser slot passes audio through untouched until step 4.
+Five slots: **Parametric EQ, Compressor, Tape, De-esser, Limiter**. Click a module to open its rack unit, drag it to reorder it, click its lamp (or the IN lamp on its rack unit) to bypass it. All five are built.
 
 - **Latency never changes.** It is the sum of every module's latency, whatever is bypassed or reordered, so the host's delay compensation stays put. A bypassed module's dry path is delayed by the same amount.
 - **Bypass is a 10 ms crossfade**, and bypassed modules keep running, so switching one back in is seamless.
@@ -103,6 +105,18 @@ Measured here, with the −1 dBTP ceiling and 6 dB of reduction on a steady sine
 
 True peak stays at or under the ceiling, within the meter's 0.05 dB, at every rate and style tested: on a hot programme driven 12 dB, on a 19 kHz tone, and while switching styles mid-limit. These are our own measurements; there has been no side-by-side test against Pro-L 2 here.
 
+## De-esser
+
+A design of our own, built to be transparent until it acts and to cut only where the "s" is.
+
+- **Four bands**, half an octave apart from **FREQUENCY** (3 to 8 kHz) up: 4.5, 6.4, 9 and 12.7 kHz by default. Each band is a dynamic cut of the form `x − depth · bandpass(x)`. With nothing to do, depth is zero and the band is an exact wire, so the de-esser is a bit-exact delay until it acts.
+- **Detection is relative to the voice.** Each band's energy is compared with the energy of the body (300 Hz to 3 kHz) at the same moment, so **THRESHOLD** is in dB of band over body (−24 to +12). The same "s" is caught the same way on a quiet verse and a limited chorus, and a bright but steady mix is not mistaken for sibilance. Below −60 dBFS nothing counts.
+- **Focus.** A band counts only as far as it keeps up with the loudest band, so an "s" at 6 kHz is cut at 6 kHz and its spill into the 12.7 kHz air band is left alone.
+- **Onsets are not sibilance.** The body detector rises as fast as the bands, so a vowel's start or a plosive lifts both together.
+- **RANGE** (0 to 18 dB) is the most any band cuts, with a 3 dB soft knee. **RELEASE** 10 to 200 ms; the attack is 0.5 ms, and 1 ms of lookahead lets the cut arrive with the consonant instead of after it. Latency is 1 ms.
+- **MODE**: MID (default, only the centre, where a vocal lives), STEREO (both channels, linked), or SIDE. **LISTEN** plays only what is being removed.
+- Four LED ladders show each band's reduction, labelled with its centre.
+
 ## Metering
 
 Switch the meters between **IN** (the signal arriving, before the input trim) and **OUT** (what leaves the console). **RESET** restarts integrated loudness, LRA, the maxima and the peak holds.
@@ -143,7 +157,8 @@ Linux needs: `libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxc
 - `bb_engine_tests`: K-weighting against the BS.1770 coefficient table; EBU Tech 3341 cases 1–5 (M, S and I, gating) and 15–19 (true peak); Tech 3342 cases 1–4 (LRA), all at 44.1, 48, 96 and 192 kHz; the 20 kHz true-peak accuracy; block-size independence; correlation; the chain's latency, bypass and reorder behaviour; and the tape slot's reported latency, measured by cross-correlation.
 - `bb_module_tests`: the EQ is flat when idle, its audio matches the drawn curve within 0.1 dB, boosts are broader than cuts, and the high-pass, mono bass, Warm's 2nd harmonic, click-free switching and reported latency all check out. The tape machine puts 3% THD at each tape's MOL, has unity small-signal gain, reports its true latency, distorts more on 456 than GP9 and more under-biased than over, holds more top end at 30 ips, has its head bump, keeps wow and flutter within spec, switches without clicks, and keeps level constant under Link. Each at several sample rates.
 - `bb_dynamics_tests`: the compressor's static curve, attack ordering, the optical stage's history-dependent release, the transformers' harmonics and the sidechain filter. The limiter's ceiling (sample and true peak) on a driven programme at 44.1, 48 and 96 kHz in every style, a 19 kHz tone, style switching under load, bit-exact transparency below the ceiling, its reported latency and stereo link. It also prints the distortion table above.
-- `bb_fuzz [seconds]`: random rates, block sizes, extreme signals, bypass and order changes, and random EQ, compressor, tape and limiter settings through the chain and both meter suites; fails on any non-finite value.
+- `bb_deesser_tests`: on a synthetic voice (a 180 Hz vowel with a band of noise for the "s"), the de-esser is bit-exact when idle in every mode, cuts a hot 6.4 kHz "s" by at least 4 dB in its own band and at least 3 dB less at 12.7 kHz, leaves the vowel within 0.1 dB, catches the same "s" 20 dB quieter within 1.5 dB, leaves a soft "s" alone, reports its true latency, and LISTEN is silent with nothing removed. At 44.1, 48 and 96 kHz.
+- `bb_fuzz [seconds]`: random rates, block sizes, extreme signals, bypass and order changes, and random EQ, compressor, tape, de-esser and limiter settings through the chain and both meter suites; fails on any non-finite value.
 - pluginval at strictness 10: `pluginval --strictness-level 10 --validate-in-process "build/BigBoss_artefacts/Release/VST3/Big Boss Mastering Console.vst3"` (on Linux, under `xvfb-run -a`).
 - `-DBB_BUILD_SNAPSHOT=ON` builds `bb_snapshot out.png [seconds]`, which runs a synthetic mix through the console and renders the dashboard and every module to PNGs (`out.png`, `out-eq.png`, `out-tape.png` and so on; the screenshots above).
 
@@ -154,12 +169,13 @@ GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand*
 | Path | What |
 |---|---|
 | `src/meter/` | Loudness (`LoudnessMeter`), true peak (`TruePeak`), stereo (`StereoMeter`) and the bundle the plugin uses (`MeterSuite`). No JUCE |
-| `src/chain/` | `Module` interface, `Chain` (order, bypass, latency), `EqModule`, `CompModule`, `TapeModule`, `LimitModule`. No JUCE |
+| `src/chain/` | `Module` interface, `Chain` (order, bypass, latency), `EqModule`, `CompModule`, `TapeModule`, `DeEssModule`, `LimitModule`. No JUCE |
 | `src/eq/` | `EqDesign` (band shapes, shared with the editor's scope) and `ClassAEq`. No JUCE |
 | `src/tape/` | `TapeMachine`. No JUCE |
 | `src/dyn/` | `DualCompressor` and `Limiter`. No JUCE |
+| `src/deess/` | `DeEsser`. No JUCE |
 | `src/dsp/` | Shared with mingusdynasty/chocolatefudgeverb, copied at `6edfcdc` (namespace `cf`): tape heads and Jiles–Atherton hysteresis, Hot Sauce saturator, tube and transformer stages, half-band filters, level match. Keep changes in step with that repo. `Oversampler` is ours |
-| `src/plugin/` | JUCE processor and editor; `Params` (parameter ids and ranges); `ui/` holds the look, meter panel and strip, spectrum and goniometer, chain strip, and the rack (`Rack`, `RackControls`, `EqUnit`, `CompUnit`, `TapeUnit`, `LimitUnit`) |
+| `src/plugin/` | JUCE processor and editor; `Params` (parameter ids and ranges); `ui/` holds the look, meter panel and strip, spectrum and goniometer, chain strip, and the rack (`Rack`, `RackControls`, `EqUnit`, `CompUnit`, `TapeUnit`, `DeEssUnit`, `LimitUnit`) |
 | `tests/`, `tools/snapshot/` | Engine tests, fuzzer, UI snapshot tool |
 
 Personal use. JUCE is AGPLv3 unless you hold a commercial licence.

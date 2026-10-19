@@ -6,7 +6,7 @@ const BigBossProcessor::SlotInfo BigBossProcessor::kSlots[kNumSlots] = {
     { "eq",    "Parametric EQ", "" },
     { "comp",  "Compressor",    "" },
     { "tape",  "Tape",          "" },
-    { "deess", "De-esser",      "step 4" },
+    { "deess", "De-esser",      "" },
     { "limit", "Limiter",       "" },
 };
 
@@ -47,6 +47,11 @@ BigBossProcessor::BigBossProcessor()
             comp = new bb::CompModule();
             chain.add (std::unique_ptr<bb::Module> (comp));
         }
+        else if (id == "deess")
+        {
+            deess = new bb::DeEssModule();
+            chain.add (std::unique_ptr<bb::Module> (deess));
+        }
         else if (id == "limit")
         {
             limit = new bb::LimitModule();
@@ -76,6 +81,20 @@ BigBossProcessor::BigBossProcessor()
               raw (pid::compScHpf) };
     pLimit = { raw (pid::limDrive), raw (pid::limCeiling), raw (pid::limStyle), raw (pid::limAuto), raw (pid::limRelease),
                raw (pid::limTp), raw (pid::limLink) };
+    pDeess = { raw (pid::deessThr), raw (pid::deessRange), raw (pid::deessFreq), raw (pid::deessRelease), raw (pid::deessMode),
+               raw (pid::deessListen) };
+}
+
+bb::DeEsser::Settings BigBossProcessor::deessSettings() const
+{
+    bb::DeEsser::Settings s;
+    s.thresholdDb = pDeess.thr->load();
+    s.rangeDb = pDeess.range->load();
+    s.freq = pDeess.freq->load();
+    s.releaseMs = pDeess.release->load();
+    s.mode = juce::roundToInt (pDeess.mode->load());
+    s.listen = pDeess.listen->load() > 0.5f;
+    return s;
 }
 
 bb::DualCompressor::Settings BigBossProcessor::compSettings() const
@@ -157,6 +176,7 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     tape->settings = tapeSettings();
     comp->settings = compSettings();
     limit->settings = limitSettings();
+    deess->settings = deessSettings();
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     chain.prepare (sampleRate, block);
     const int nch = juce::jmax (1, getTotalNumInputChannels());
@@ -198,6 +218,7 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
     tape->settings = tapeSettings();
     comp->settings = compSettings();
     limit->settings = limitSettings();
+    deess->settings = deessSettings();
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     const double inTarget  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
     const double outTarget = juce::Decibels::decibelsToGain ((double) pOutTrim->load());

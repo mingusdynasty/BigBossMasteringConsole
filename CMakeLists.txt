@@ -16,7 +16,7 @@ option(BB_BUILD_SNAPSHOT "Build the UI snapshot tool (renders the console to a P
 # src/dsp is shared with mingusdynasty/chocolatefudgeverb (namespace cf); keep it in step with that repo.
 add_library(bb_engine STATIC
     src/dsp/TapeHead.cpp src/dsp/TapeSaturator.cpp src/dsp/PlateAmp.cpp src/dsp/Oversampler.cpp
-    src/eq/ClassAEq.cpp src/tape/TapeMachine.cpp src/dyn/DualCompressor.cpp src/dyn/Limiter.cpp
+    src/eq/ClassAEq.cpp src/tape/TapeMachine.cpp src/dyn/DualCompressor.cpp src/dyn/Limiter.cpp src/deess/DeEsser.cpp
     src/meter/LoudnessMeter.cpp src/meter/TruePeak.cpp src/meter/MeterSuite.cpp
     src/chain/Chain.cpp)
 target_include_directories(bb_engine PUBLIC src)
@@ -35,6 +35,10 @@ if(BB_BUILD_TESTS)
     add_executable(bb_dynamics_tests tests/DynamicsTests.cpp)
     target_link_libraries(bb_dynamics_tests PRIVATE bb_engine)
     add_test(NAME dynamics COMMAND bb_dynamics_tests)
+
+    add_executable(bb_deesser_tests tests/DeEsserTests.cpp)
+    target_link_libraries(bb_deesser_tests PRIVATE bb_engine)
+    add_test(NAME deesser COMMAND bb_deesser_tests)
 
     add_executable(bb_fuzz tests/Fuzz.cpp)
     target_link_libraries(bb_fuzz PRIVATE bb_engine)
@@ -80,7 +84,8 @@ if(BB_BUILD_PLUGIN)
         src/plugin/ui/EqUnit.cpp
         src/plugin/ui/TapeUnit.cpp
         src/plugin/ui/CompUnit.cpp
-        src/plugin/ui/LimitUnit.cpp)
+        src/plugin/ui/LimitUnit.cpp
+        src/plugin/ui/DeEssUnit.cpp)
     target_sources(BigBoss PRIVATE ${BB_PLUGIN_SOURCES})
 
     target_compile_definitions(BigBoss PUBLIC

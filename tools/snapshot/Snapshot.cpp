@@ -30,6 +30,7 @@ int main (int argc, char** argv)
     set ("tape_in", -6.0f);   // the demo mix is hot: bring it to about 0 VU
     set ("comp_opto_thr", -22.0f); set ("comp_vca_thr", -16.0f); set ("comp_xfmr", 1.0f);
     set ("limit_drive", 12.0f);
+    set ("deess_thresh", -10.0f);   // the hats stand in for sibilance
     std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
     auto* editor = static_cast<BigBossEditor*> (ed.get());
 
