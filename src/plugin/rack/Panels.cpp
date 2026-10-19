@@ -718,6 +718,11 @@ void OutputPanel::tick (float)
     integrated = rd.integrated.load();
     truePeak = juce::jmax (rd.truePeakHeld[0].load(), rd.truePeakHeld[1].load());
     repaint (960, 70, 220, 40);
+    if (proc.bypassAll.load() != shownBypass)
+    {
+        shownBypass = ! shownBypass;
+        repaint (178, 74, 120, 14);
+    }
 }
 
 void OutputPanel::resized()
@@ -738,6 +743,8 @@ void OutputPanel::paint (juce::Graphics& g)
     drawEngraved (g, "LAST IN THE CHAIN", { 24, 72, 140, 12 }, consoleInk.withAlpha (0.6f), 7.5f, true, juce::Justification::left);
     drawEngraved (g, "LOUDNESS, PEAKS,", { 178, 52, 110, 11 }, consoleInk.withAlpha (0.7f), 7.0f, true, juce::Justification::left);
     drawEngraved (g, "SPECTRUM, STEREO", { 178, 63, 110, 11 }, consoleInk.withAlpha (0.7f), 7.0f, true, juce::Justification::left);
+    if (shownBypass)   // the analyser's BYPASS ALL is on
+        drawEngraved (g, "ALL BYPASSED", { 178, 76, 110, 11 }, juce::Colour (0xffe0533c), 8.0f, true, juce::Justification::left);
     legendOver (g, "INPUT TRIM", 330, consoleInk, 4, 80);
     scale (g, *trim, { { -24.0f, "-24" }, { 0.0f, "0" }, { 24.0f, "+24" } }, consoleInk, 6.5f);
 
@@ -838,6 +845,11 @@ MasterPanel::MasterPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
     undoKey.onClick = [this] { undo(); };
     applyKey.setEnabled (false);
     undoKey.setEnabled (false);
+
+    setStyle (analyserKey, ButtonStyle::consoleKey);
+    analyserKey.setClickingTogglesState (true);
+    analyserKey.setTooltip ("Show the analyser in place of the modules");
+    addAndMakeVisible (analyserKey);
 }
 
 MasterPanel::~MasterPanel()
@@ -849,6 +861,7 @@ MasterPanel::~MasterPanel()
 
 void MasterPanel::resized()
 {
+    analyserKey.setBounds (44, 88, 92, 20);
     prev.setBounds (496, 22, 32, 30);
     next.setBounds (532, 22, 32, 30);
     save.setBounds (190, 62, 72, 22);
@@ -1003,8 +1016,11 @@ void MasterPanel::tick (float seconds)
     }
     listenKey.setToggleState (state == State::Listening, juce::dontSendNotification);
     for (auto* k : { &applyKey, &undoKey }) k->setAlpha (k->isEnabled() ? 1.0f : 0.4f);
-    if (proc.presetName != shownPreset) shownPreset = proc.presetName;
-    repaint();
+    // the faceplate only redraws when something on it moves
+    const bool changed = proc.presetName != shownPreset || state != shownState;
+    shownPreset = proc.presetName;
+    shownState = state;
+    if (changed || state == State::Listening || state == State::Thinking) repaint();
 }
 
 void MasterPanel::mouseUp (const juce::MouseEvent& e)
@@ -1100,18 +1116,28 @@ void MasterPanel::paint (juce::Graphics& g)
 
 AnalyserPanel::AnalyserPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
 {
-    for (auto* k : { &inKey, &outKey, &resetKey })
+    for (auto* k : { &freezeKey, &resetKey, &bypassKey, &inKey, &outKey })
     {
         setStyle (*k, ButtonStyle::consoleKey);
         k->setClickingTogglesState (false);
         addAndMakeVisible (*k);
     }
+    freezeKey.setTooltip ("Hold every display where it is; the meters keep measuring underneath");
+    resetKey.setTooltip ("Restart integrated loudness, LRA, the peak holds and the spectrogram");
+    bypassKey.setTooltip ("Bypass the whole console, trim and fader included, to compare with the untouched mix. "
+                          "The meters keep running. Not saved with the session.");
     inKey.setTooltip ("Meter the input, before the trim");
     outKey.setTooltip ("Meter the output, after the fader");
-    resetKey.setTooltip ("Restart integrated loudness, LRA and the peak holds");
+    freezeKey.onClick = [this]
+    {
+        frozen = ! frozen;
+        freezeKey.setToggleState (frozen, juce::dontSendNotification);
+        if (! frozen) useSource (showingOutput);   // pick up from now, not from where it stopped
+    };
+    resetKey.onClick = [this] { reset(); };
+    bypassKey.onClick = [this] { proc.bypassAll = ! proc.bypassAll.load(); };
     inKey.onClick = [this] { useSource (false); };
     outKey.onClick = [this] { useSource (true); };
-    resetKey.onClick = [this] { proc.inMeters.requestReset(); proc.outMeters.requestReset(); };
 
     // a reference line for the loudness bars and history; it changes nothing in the audio
     const std::pair<const char*, float> targets[] = { { "-9 LUFS", -9.0f }, { "-11 LUFS", -11.0f }, { "-14 LUFS  streaming", -14.0f },
@@ -1133,8 +1159,17 @@ AnalyserPanel::AnalyserPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
 
     addAndMakeVisible (meters);
     addAndMakeVisible (spectrum);
+    addAndMakeVisible (spectrogram);
     addAndMakeVisible (gonio);
     useSource (true);
+}
+
+void AnalyserPanel::reset()
+{
+    proc.inMeters.requestReset();
+    proc.outMeters.requestReset();
+    spectrum.clearPeak();
+    spectrogram.clear();
 }
 
 void AnalyserPanel::useSource (bool output)
@@ -1157,16 +1192,37 @@ void AnalyserPanel::refreshSource()
 void AnalyserPanel::tick (float)
 {
     refreshSource();
-    meters.tick();   // always, so the loudness history has no gap when the analyser comes back
+    if (proc.bypassAll.load() != shownBypass)
+    {
+        shownBypass = ! shownBypass;
+        bypassKey.setToggleState (shownBypass, juce::dontSendNotification);
+        repaint (0, 0, getWidth(), 44);
+    }
+    if (frozen) return;
+    meters.tick();   // even while hidden, so the loudness history has no gap when the analyser comes back
     if (isVisible())
     {
         spectrum.tick();
+        spectrogram.push (spectrum.frame(), spectrum.sampleRate());
         gonio.tick();
     }
 }
 
 void AnalyserPanel::resized()
 {
+    // the control strip beside the name
+    auto row = juce::Rectangle<int> (120, 12, getWidth() - 134, 22);
+    freezeKey.setBounds (row.removeFromLeft (76));
+    row.removeFromLeft (6);
+    resetKey.setBounds (row.removeFromLeft (68));
+    row.removeFromLeft (6);
+    bypassKey.setBounds (row.removeFromLeft (100));
+    target.setBounds (row.removeFromRight (190).withSizeKeepingCentre (190, 24));
+    row.removeFromRight (64);   // TARGET
+    outKey.setBounds (row.removeFromRight (52));
+    row.removeFromRight (6);
+    inKey.setBounds (row.removeFromRight (46));
+
     auto r = getLocalBounds().reduced (14, 0);
     r.removeFromTop (44);
     r.removeFromBottom (14);
@@ -1179,36 +1235,24 @@ void AnalyserPanel::resized()
     spectrum.setBounds (s.withTrimmedBottom (10));
     gonio.setBounds (lower.removeFromLeft (220));
     lower.removeFromLeft (10);
-    controls = lower;
-
-    auto c = lower.reduced (14, 18);
-    c.removeFromTop (16);
-    auto row = c.removeFromTop (24);
-    inKey.setBounds (row.removeFromLeft (52));
-    row.removeFromLeft (6);
-    outKey.setBounds (row.removeFromLeft (52));
-    row.removeFromLeft (16);
-    resetKey.setBounds (row.removeFromLeft (64));
-    c.removeFromTop (40);
-    target.setBounds (c.removeFromTop (26).withWidth (220));
+    spectrogram.setBounds (lower);
 }
 
 void AnalyserPanel::paint (juce::Graphics& g)
 {
     paintFinish (g, juce::Colour (0xff1b1c1e), Finish::powder);
     drawEngraved (g, "BB-A", { 24, 8, 80, 28 }, juce::Colour (0xffe8e8e8), 22.0f, true, juce::Justification::left);
-    drawEngraved (g, juce::String::fromUTF8 ("MASTERING ANALYSER  ·  EBU R128 / ITU-R BS.1770  ·  TRUE PEAK  ·  SPECTRUM  ·  STEREO FIELD"),
-                  { 110, 12, 900, 22 }, consoleInk, 9.0f, true, juce::Justification::left);
+    drawEngraved (g, "METER", inKey.getBounds().translated (-56, 0).withWidth (50).toFloat(), consoleInk, 8.0f, true,
+                  juce::Justification::right);
+    drawEngraved (g, "TARGET", target.getBounds().translated (-64, 0).withWidth (58).toFloat(), consoleInk, 8.0f, true,
+                  juce::Justification::right);
+    if (shownBypass)
+        drawEngraved (g, "OUTPUT IS THE UNTOUCHED INPUT", bypassKey.getBounds().translated (110, 0).withWidth (220).toFloat(),
+                      juce::Colour (0xffe0533c), 8.0f, true, juce::Justification::left);
     // the screen
     g.setColour (juce::Colours::black);
     g.fillRoundedRectangle (screen.toFloat(), 6.0f);
     g.setColour (bbui::col::bg);
     g.fillRoundedRectangle (screen.toFloat().reduced (4.0f), 4.0f);
-    g.setColour (bbui::col::panel);
-    g.fillRoundedRectangle (controls.toFloat(), 6.0f);
-    auto c = controls.reduced (14, 18);
-    drawEngraved (g, "METER", c.removeFromTop (16).toFloat(), consoleInk, 8.0f, true, juce::Justification::topLeft);
-    c.removeFromTop (48);
-    drawEngraved (g, "LOUDNESS TARGET", c.removeFromTop (14).toFloat(), consoleInk, 8.0f, true, juce::Justification::left);
 }
 } // namespace kit

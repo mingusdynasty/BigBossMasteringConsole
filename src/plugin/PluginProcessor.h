@@ -50,7 +50,7 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     // the console's slots, in their default order; ids are used in parameter ids and saved state
-    struct SlotInfo { const char* id; const char* name; const char* comingIn; };
+    struct SlotInfo { const char* id; const char* name; };
     static constexpr int kNumSlots = 5;
     static const SlotInfo kSlots[kNumSlots];
 
@@ -59,7 +59,6 @@ public:
     // chain order, from the editor (message thread); saved with the session
     bb::Chain::Order getOrder() const { return chain.order(); }
     void setOrder (const bb::Chain::Order& o);
-    bool slotIsBuilt (int slot) const { return std::strlen (kSlots[slot].comingIn) == 0; }
 
     // the modules' settings as the parameters stand now; safe from any thread
     bb::eq::Settings eqSettings() const;
@@ -76,6 +75,10 @@ public:
     bb::MeterSuite inMeters, outMeters;
     std::atomic<double> sampleRateHz { 48000.0 };
     bool editorAnalysis = false;   // the editor last showed the analyser in place of the modules
+    // the analyser's BYPASS ALL: the output is the input, untouched and delayed by the chain's latency,
+    // while the chain keeps running and both meters keep measuring. Not saved, so a session never
+    // opens bypassed.
+    std::atomic<bool> bypassAll { false };
 
     // sample peak (dBFS) per channel since the last call, before the input trim or after the fader; for the meters
     float takePeakDb (bool output, int ch);
@@ -151,8 +154,14 @@ private:
     double inGain = 1, outGain = 1;
     int latency = 0;
 
+    // the dry signal, delayed by the chain's latency: for the host's bypass and for BYPASS ALL. Fed on
+    // every block, so either can switch in without a stale stretch
     std::array<std::vector<double>, 2> bypassLine;
     int bypassPos = 0, bypassMask = 0;
+    std::vector<double> dryL, dryR;
+    static constexpr double kBypassFade = 0.010;   // seconds
+    double dryMix = 0;   // 0 = the console, 1 = bypassed; ramps over kBypassFade
+    void delayDry (const double* l, const double* r, double* outL, double* outR, int n);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BigBossProcessor)
 };

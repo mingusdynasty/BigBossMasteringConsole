@@ -223,6 +223,7 @@ public:
     void tick (float seconds) override;
 
     std::function<void()> onOrderChanged;   // a preset or undo moved the modules
+    juce::ToggleButton analyserKey { "ANALYSER" };   // the same switch as the output unit's
 
     // for the snapshot tool
     void pressListen() { listen(); }
@@ -244,7 +245,7 @@ private:
     juce::String shownPreset;
     std::unique_ptr<juce::AlertWindow> saveDialog;
 
-    enum class State { Idle, Listening, Thinking, Ready, Applied, Failed } state = State::Idle;
+    enum class State { Idle, Listening, Thinking, Ready, Applied, Failed } state = State::Idle, shownState = State::Idle;
     bb::assist::Goal goal = bb::assist::Goal::Streaming;
     std::thread worker;
     std::atomic<bool> cancel { false }, workerDone { false };
@@ -277,6 +278,7 @@ private:
     PeakMeter inMeter, outMeter;
     juce::Label readout;
     float shortTerm = -200, integrated = -200, truePeak = -200;
+    bool shownBypass = false;
 };
 
 class AnalyserPanel final : public Panel
@@ -285,20 +287,24 @@ public:
     explicit AnalyserPanel (BigBossProcessor&);
     void paint (juce::Graphics&) override;
     void resized() override;
-    void tick (float seconds) override;   // the loudness history runs whether or not the analyser shows
+    void tick (float seconds) override;   // the loudness history runs whether or not the analyser shows (unless frozen)
     void refreshSource();                 // after a sample-rate change
 
 private:
     void useSource (bool output);
 
+    void reset();
+
     BigBossProcessor& proc;
     bbui::MeterPanel meters;
     bbui::Spectrum spectrum;
+    bbui::Spectrogram spectrogram;
     bbui::Goniometer gonio;
-    juce::ToggleButton inKey { "IN" }, outKey { "OUT" }, resetKey { "RESET" };
+    juce::ToggleButton freezeKey { "FREEZE" }, resetKey { "RESET" }, bypassKey { "BYPASS ALL" };
+    juce::ToggleButton inKey { "IN" }, outKey { "OUT" };
     juce::ComboBox target;
-    bool showingOutput = true;
+    bool showingOutput = true, frozen = false, shownBypass = false;
     double shownRate = 0;
-    juce::Rectangle<int> screen, controls;
+    juce::Rectangle<int> screen;
 };
 } // namespace kit

@@ -3,11 +3,11 @@
 #include "Params.h"
 
 const BigBossProcessor::SlotInfo BigBossProcessor::kSlots[kNumSlots] = {
-    { "eq",    "Parametric EQ", "" },
-    { "comp",  "Compressor",    "" },
-    { "tape",  "Tape",          "" },
-    { "deess", "De-esser",      "" },
-    { "limit", "Limiter",       "" },
+    { "eq",    "Parametric EQ" },
+    { "comp",  "Compressor" },
+    { "tape",  "Tape" },
+    { "deess", "De-esser" },
+    { "limit", "Limiter" },
 };
 
 namespace
@@ -188,6 +188,8 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     const int block = juce::jmax (64, samplesPerBlock);
     bufL.assign ((size_t) block, 0.0);
     bufR.assign ((size_t) block, 0.0);
+    dryL.assign ((size_t) block, 0.0);
+    dryR.assign ((size_t) block, 0.0);
     eq->settings = eqSettings();
     tape->settings = tapeSettings();
     comp->settings = compSettings();
@@ -206,6 +208,7 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     bypassMask = len - 1;
     for (auto& l : bypassLine) l.assign ((size_t) len, 0.0);
     bypassPos = 0;
+    dryMix = bypassAll.load() ? 1.0 : 0.0;
     inGain  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
     outGain = volumeGain (pVolume->load());
 
@@ -262,6 +265,7 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
         inMeters.process (l, outR ? r : l, k);
         notePeaks (inPeak, l, outR ? r : l, k);
         if (capturing.load (std::memory_order_relaxed)) captureBlock (l, outR ? r : l, k);
+        delayDry (l, r, dryL.data(), dryR.data(), k);
 
         // trims glide linearly across the chunk
         const double gi = (inTarget - inGain) / k, go = (outTarget - outGain) / k;
@@ -273,6 +277,21 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
         for (int i = 0; i < k; ++i) { outGain += go; l[i] *= outGain; r[i] *= outGain; }
         outGain = outTarget;
 
+        // BYPASS ALL: an equal-gain raised-cosine crossfade to the delayed dry signal (the two are
+        // time-aligned, so nothing combs while it moves)
+        const bool bypassed = bypassAll.load (std::memory_order_relaxed);
+        if (bypassed || dryMix > 0.0)
+        {
+            const double step = 1.0 / (kBypassFade * sampleRateHz.load (std::memory_order_relaxed));
+            for (int i = 0; i < k; ++i)
+            {
+                dryMix = bypassed ? juce::jmin (1.0, dryMix + step) : juce::jmax (0.0, dryMix - step);
+                const double g = 0.5 - 0.5 * std::cos (dryMix * juce::MathConstants<double>::pi);
+                l[i] += g * (dryL[(size_t) i] - l[i]);
+                r[i] += g * (dryR[(size_t) i] - r[i]);
+            }
+        }
+
         outMeters.process (l, outR ? r : l, k);
         notePeaks (outPeak, l, outR ? r : l, k);
 
@@ -281,24 +300,39 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
     }
 }
 
+void BigBossProcessor::delayDry (const double* l, const double* r, double* outL, double* outR, int n)
+{
+    auto& lineL = bypassLine[0];
+    auto& lineR = bypassLine[1];
+    int w = bypassPos;
+    for (int i = 0; i < n; ++i)
+    {
+        lineL[(size_t) w] = l[i];
+        lineR[(size_t) w] = r[i];
+        const auto from = (size_t) ((w - latency) & bypassMask);
+        outL[i] = lineL[from];
+        outR[i] = lineR[from];
+        w = (w + 1) & bypassMask;
+    }
+    bypassPos = w;
+}
+
 template <typename T>
 void BigBossProcessor::bypassImpl (juce::AudioBuffer<T>& buffer)
 {
-    const int n = buffer.getNumSamples(), nch = juce::jmin (2, buffer.getNumChannels());
-    if (latency == 0 || bypassLine[0].empty()) return;
-    for (int c = 0; c < nch; ++c)
+    const int n = buffer.getNumSamples(), nch = juce::jmin (2, getTotalNumInputChannels(), buffer.getNumChannels());
+    if (nch == 0 || bufL.empty()) return;
+    T* pl = buffer.getWritePointer (0);
+    T* pr = nch > 1 ? buffer.getWritePointer (1) : nullptr;
+    const int chunk = (int) bufL.size();
+    for (int off = 0; off < n; off += chunk)
     {
-        T* p = buffer.getWritePointer (c);
-        auto& line = bypassLine[(size_t) c];
-        int w = bypassPos;
-        for (int i = 0; i < n; ++i)
-        {
-            line[(size_t) w] = (double) p[i];
-            p[i] = (T) line[(size_t) ((w - latency) & bypassMask)];
-            w = (w + 1) & bypassMask;
-        }
+        const int k = juce::jmin (chunk, n - off);
+        for (int i = 0; i < k; ++i) { bufL[(size_t) i] = (double) pl[off + i]; bufR[(size_t) i] = pr ? (double) pr[off + i] : bufL[(size_t) i]; }
+        delayDry (bufL.data(), bufR.data(), bufL.data(), bufR.data(), k);
+        for (int i = 0; i < k; ++i) pl[off + i] = (T) bufL[(size_t) i];
+        if (pr) for (int i = 0; i < k; ++i) pr[off + i] = (T) bufR[(size_t) i];
     }
-    bypassPos = (bypassPos + n) & bypassMask;
 }
 
 void BigBossProcessor::processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer&)  { processImpl (b); }

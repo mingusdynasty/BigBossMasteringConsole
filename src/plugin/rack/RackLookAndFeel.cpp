@@ -26,8 +26,6 @@ namespace kit
             }
         }
 
-
-
         void pointer (juce::Graphics& g, juce::Point<float> c, float angle, float r0, float r1, float width, juce::Colour col)
         {
             juce::Path p;

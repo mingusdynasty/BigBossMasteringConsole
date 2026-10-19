@@ -15,7 +15,7 @@ option(BB_BUILD_SNAPSHOT "Build the UI snapshot tool (renders the console to a P
 # ---------------------------------------------------------------- engine (no JUCE dependency)
 # src/dsp is shared with mingusdynasty/chocolatefudgeverb (namespace cf); keep it in step with that repo.
 add_library(bb_engine STATIC
-    src/dsp/TapeHead.cpp src/dsp/TapeSaturator.cpp src/dsp/PlateAmp.cpp src/dsp/Oversampler.cpp
+    src/dsp/Oversampler.cpp
     src/eq/ClassAEq.cpp src/tape/TapeMachine.cpp src/dyn/DualCompressor.cpp src/dyn/Limiter.cpp src/deess/DeEsser.cpp
     src/meter/LoudnessMeter.cpp src/meter/TruePeak.cpp src/meter/MeterSuite.cpp
     src/chain/Chain.cpp src/assist/Assistant.cpp)
@@ -119,5 +119,14 @@ if(BB_BUILD_PLUGIN)
             JucePlugin_Name="Big Boss Mastering Console")
         target_link_libraries(bb_snapshot PRIVATE bb_engine BigBossFonts juce::juce_audio_utils juce::juce_dsp
             juce::juce_recommended_config_flags)
+
+        juce_add_console_app(bb_plugin_tests PRODUCT_NAME "bb_plugin_tests")
+        target_sources(bb_plugin_tests PRIVATE tests/PluginTests.cpp ${BB_PLUGIN_SOURCES})
+        target_include_directories(bb_plugin_tests PRIVATE src)
+        target_compile_definitions(bb_plugin_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+            JucePlugin_Name="Big Boss Mastering Console")
+        target_link_libraries(bb_plugin_tests PRIVATE bb_engine BigBossFonts juce::juce_audio_utils juce::juce_dsp
+            juce::juce_recommended_config_flags)
+        add_test(NAME plugin COMMAND bb_plugin_tests)
     endif()
 endif()

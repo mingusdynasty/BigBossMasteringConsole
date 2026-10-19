@@ -29,6 +29,7 @@ public:
 private:
     void timerCallback() override { tickAll (1.0f / 30.0f); }
     void tickAll (float seconds);
+    juce::AffineTransform designToWindow() const;
     void layoutModules();
     void dragModule (int slot, int dy);
     void dropModule (int slot);

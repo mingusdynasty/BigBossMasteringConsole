@@ -26,6 +26,7 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p)
     content.addAndMakeVisible (output);
     content.addChildComponent (analyser);
     output.analyserKey.onClick = [this] { showAnalyser (output.analyserKey.getToggleState()); };
+    master.analyserKey.onClick = [this] { showAnalyser (master.analyserKey.getToggleState()); };
 
     content.setSize (designWidth, designHeight);
     addAndMakeVisible (content);
@@ -52,6 +53,7 @@ void BigBossEditor::showAnalyser (bool on)
 {
     proc.editorAnalysis = on;
     output.analyserKey.setToggleState (on, juce::dontSendNotification);
+    master.analyserKey.setToggleState (on, juce::dontSendNotification);
     for (auto& m : modules) m->setVisible (! on);
     analyser.setVisible (on);
     repaint();
@@ -113,13 +115,23 @@ void BigBossEditor::dropModule (int slot)
     layoutModules();
 }
 
+juce::AffineTransform BigBossEditor::designToWindow() const
+{
+    // the whole rack always fits: if the host gives the window another shape than the rack's, the
+    // rack is centred in it rather than cropped
+    const auto scale = juce::jmin ((float) getWidth() / (float) designWidth, (float) getHeight() / (float) designHeight);
+    return juce::AffineTransform::scale (scale).translated (0.5f * ((float) getWidth() - scale * (float) designWidth),
+                                                            0.5f * ((float) getHeight() - scale * (float) designHeight));
+}
+
 void BigBossEditor::paint (juce::Graphics& g)
 {
-    const auto scale = (float) getWidth() / (float) designWidth;
-    g.addTransform (juce::AffineTransform::scale (scale));
+    g.fillAll (juce::Colour (0xff0a0a0a));
+    g.addTransform (designToWindow());
 
     // rack rails, with square cage-nut holes
-    g.fillAll (juce::Colour (0xff141414));
+    g.setColour (juce::Colour (0xff141414));
+    g.fillRect (0, 0, designWidth, designHeight);
     for (auto x : { 0, designWidth - kit::earWidth })
     {
         const auto ear = juce::Rectangle<float> ((float) x, 0.0f, (float) kit::earWidth, (float) designHeight);
@@ -158,7 +170,7 @@ void BigBossEditor::paint (juce::Graphics& g)
 
 void BigBossEditor::resized()
 {
-    const auto scale = (float) getWidth() / (float) designWidth;
-    content.setTransform (juce::AffineTransform::scale (scale));
     content.setBounds (0, 0, designWidth, designHeight);
+    content.setTransform (designToWindow());
+    repaint();
 }
