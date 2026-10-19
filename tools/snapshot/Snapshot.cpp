@@ -1,7 +1,7 @@
 // Renders the console to PNGs after running a synthetic mix through it, so the UI can be checked
 // without a host. Usage: bb_snapshot out.png [seconds]
-// Writes out.png (the rack) and out-analyser.png (the analyser in place of the modules), with demo
-// settings so the panels have something to show.
+// Writes out.png (the rack, with the assistant's suggestion for the mix) and out-analyser.png (the
+// analyser in place of the modules), with demo settings so the panels have something to show.
 #include "plugin/PluginEditor.h"
 #include "plugin/PluginProcessor.h"
 
@@ -62,6 +62,15 @@ int main (int argc, char** argv)
         nextBlock();
         if ((done / block) % 50 == 0) editor->refreshNow();
     }
+    // the assistant listens to the mix and makes its suggestion, shown on the master section
+    editor->masterSection().pressListen();
+    for (int f = 0; f < 2000 && editor->masterSection().busy(); ++f)
+    {
+        for (int k = 0; k < 3; ++k) nextBlock();
+        editor->refreshNow();
+        if (! proc.isCapturing()) juce::Thread::sleep (20);
+    }
+
     // the rack at its design size, then the analyser in place of the modules
     ed->setSize (BigBossEditor::designWidth, BigBossEditor::designHeight);
     for (int view = 0; view < 2; ++view)

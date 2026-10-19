@@ -18,7 +18,7 @@ add_library(bb_engine STATIC
     src/dsp/TapeHead.cpp src/dsp/TapeSaturator.cpp src/dsp/PlateAmp.cpp src/dsp/Oversampler.cpp
     src/eq/ClassAEq.cpp src/tape/TapeMachine.cpp src/dyn/DualCompressor.cpp src/dyn/Limiter.cpp src/deess/DeEsser.cpp
     src/meter/LoudnessMeter.cpp src/meter/TruePeak.cpp src/meter/MeterSuite.cpp
-    src/chain/Chain.cpp)
+    src/chain/Chain.cpp src/assist/Assistant.cpp)
 target_include_directories(bb_engine PUBLIC src)
 set_target_properties(bb_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -39,6 +39,10 @@ if(BB_BUILD_TESTS)
     add_executable(bb_deesser_tests tests/DeEsserTests.cpp)
     target_link_libraries(bb_deesser_tests PRIVATE bb_engine)
     add_test(NAME deesser COMMAND bb_deesser_tests)
+
+    add_executable(bb_assist_tests tests/AssistTests.cpp)
+    target_link_libraries(bb_assist_tests PRIVATE bb_engine)
+    add_test(NAME assist COMMAND bb_assist_tests)
 
     add_executable(bb_fuzz tests/Fuzz.cpp)
     target_link_libraries(bb_fuzz PRIVATE bb_engine)
@@ -80,7 +84,7 @@ if(BB_BUILD_PLUGIN)
     set(BB_PLUGIN_SOURCES
         src/plugin/PluginProcessor.cpp
         src/plugin/PluginEditor.cpp
-        src/plugin/Params.cpp
+        src/plugin/Params.cpp src/plugin/Presets.cpp
         src/plugin/ui/Look.cpp
         src/plugin/ui/MeterPanel.cpp
         src/plugin/ui/Spectrum.cpp

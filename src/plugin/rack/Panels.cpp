@@ -780,6 +780,322 @@ void OutputPanel::paint (juce::Graphics& g)
     lcd ("TRUE PEAK", truePeak, 1076, "dBTP");
 }
 
+// ===================================================================== master section
+
+namespace
+{
+const auto lcdAmber = juce::Colour (0xffff9a3c), lcdBack = juce::Colour (0xff0b0b0b);
+constexpr std::array<bb::assist::Goal, 4> kGoals { bb::assist::Goal::Streaming, bb::assist::Goal::Loud, bb::assist::Goal::Club,
+                                                   bb::assist::Goal::Dynamic };
+constexpr std::array<const char*, 4> kGoalLabels { "STREAM -14", "LOUD -11", "CLUB -9", "DYNAMIC -16" };
+}
+
+MasterPanel::MasterPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
+{
+    for (auto* b : { &prev, &next, &save, &browse })
+    {
+        setStyle (*b, ButtonStyle::consoleKey);
+        b->setClickingTogglesState (false);
+        addAndMakeVisible (*b);
+    }
+    prev.setTooltip ("Previous preset");
+    next.setTooltip ("Next preset");
+    save.setTooltip ("Save these settings, and the module order, as a preset of your own");
+    browse.setTooltip ("All presets: factory and your own");
+    prev.onClick = [this] { stepPreset (-1); };
+    next.onClick = [this] { stepPreset (1); };
+    save.onClick = [this] { savePreset(); };
+    browse.onClick = [this] { showPresetMenu(); };
+
+    for (size_t i = 0; i < goalKeys.size(); ++i)
+    {
+        auto& k = goalKeys[i];
+        k.setButtonText (kGoalLabels[i]);
+        setStyle (k, ButtonStyle::consoleKey);
+        k.setRadioGroupId (0x6b6f);
+        k.setClickingTogglesState (true);
+        k.setToggleState (i == 0, juce::dontSendNotification);
+        k.onClick = [this, i] { if (goalKeys[i].getToggleState()) goal = kGoals[i]; };
+        addAndMakeVisible (k);
+    }
+    goalKeys[0].setTooltip ("Goal: streaming services, -14 LUFS and -1 dBTP");
+    goalKeys[1].setTooltip ("Goal: loud, -11 LUFS");
+    goalKeys[2].setTooltip ("Goal: club and DJ play, -9 LUFS");
+    goalKeys[3].setTooltip ("Goal: dynamic, -16 LUFS (Apple Music, acoustic, classical)");
+
+    for (auto* k : { &listenKey, &applyKey, &undoKey })
+    {
+        setStyle (*k, ButtonStyle::consoleKey);
+        k->setClickingTogglesState (false);
+        addAndMakeVisible (*k);
+    }
+    listenKey.setTooltip ("Play your mix (its loudest part is best) and press LISTEN: the assistant listens for 10 seconds, "
+                          "then suggests settings for the goal");
+    applyKey.setTooltip ("Use the assistant's settings");
+    undoKey.setTooltip ("Put back the settings from before APPLY");
+    listenKey.onClick = [this] { listen(); };
+    applyKey.onClick = [this] { apply(); };
+    undoKey.onClick = [this] { undo(); };
+    applyKey.setEnabled (false);
+    undoKey.setEnabled (false);
+}
+
+MasterPanel::~MasterPanel()
+{
+    cancel.store (true);
+    if (worker.joinable()) worker.join();
+    if (state == State::Listening) proc.cancelCapture();
+}
+
+void MasterPanel::resized()
+{
+    prev.setBounds (496, 22, 32, 30);
+    next.setBounds (532, 22, 32, 30);
+    save.setBounds (190, 62, 72, 22);
+    browse.setBounds (268, 62, 80, 22);
+    for (size_t i = 0; i < goalKeys.size(); ++i) goalKeys[i].setBounds (600 + 78 * (int) i, 20, 74, 22);
+    listenKey.setBounds (930, 20, 76, 22);
+    applyKey.setBounds (1012, 20, 76, 22);
+    undoKey.setBounds (1094, 20, 76, 22);
+}
+
+void MasterPanel::stepPreset (int delta)
+{
+    // through the factory list, then the user's
+    const auto& f = presets::factory();
+    const auto user = presets::userPresets();
+    const int total = (int) f.size() + user.size();
+    int at = proc.getCurrentProgram();
+    for (int i = 0; i < user.size(); ++i)
+        if (user[i].getFileNameWithoutExtension() == proc.presetName) at = (int) f.size() + i;
+    const int to = ((at + delta) % total + total) % total;
+    if (to < (int) f.size()) proc.loadFactoryPreset (to);
+    else proc.loadUserPreset (user[to - (int) f.size()]);
+    if (onOrderChanged) onOrderChanged();
+}
+
+void MasterPanel::showPresetMenu()
+{
+    juce::PopupMenu menu, factoryMenu, userMenu;
+    const auto& f = presets::factory();
+    for (int i = 0; i < (int) f.size(); ++i)
+        menu.addItem (1 + i, f[(size_t) i].name, true, proc.presetName == f[(size_t) i].name);
+    const auto user = presets::userPresets();
+    menu.addSeparator();
+    if (user.isEmpty()) menu.addItem (-1, "(no presets of your own yet: press SAVE)", false);
+    for (int i = 0; i < user.size(); ++i)
+        menu.addItem (1000 + i, user[i].getFileNameWithoutExtension(), true, proc.presetName == user[i].getFileNameWithoutExtension());
+    menu.addSeparator();
+    menu.addItem (2000, "Save as...");
+    menu.addItem (2001, "Open the presets folder");
+    juce::Component::SafePointer<MasterPanel> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (presetLcd)),
+                        [safe, user] (int r)
+                        {
+                            if (safe == nullptr || r == 0) return;
+                            auto& self = *safe;
+                            if (r >= 1 && r < 1000) self.proc.loadFactoryPreset (r - 1);
+                            else if (r >= 1000 && r < 2000) self.proc.loadUserPreset (user[r - 1000]);
+                            else if (r == 2000) { self.savePreset(); return; }
+                            else if (r == 2001)
+                            {
+                                presets::userFolder().createDirectory();
+                                presets::userFolder().startAsProcess();
+                                return;
+                            }
+                            if (self.onOrderChanged) self.onOrderChanged();
+                        });
+}
+
+void MasterPanel::savePreset()
+{
+    saveDialog = std::make_unique<juce::AlertWindow> ("Save preset", "Name it. A preset with the same name is replaced.",
+                                                      juce::MessageBoxIconType::NoIcon, this);
+    saveDialog->addTextEditor ("name", proc.presetName == "Init" ? juce::String() : proc.presetName);
+    saveDialog->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    saveDialog->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<MasterPanel> safe (this);
+    saveDialog->enterModalState (true, juce::ModalCallbackFunction::create ([safe] (int r)
+    {
+        if (safe == nullptr) return;
+        const auto name = safe->saveDialog->getTextEditorContents ("name");
+        if (r == 1 && ! safe->proc.saveUserPreset (name))
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Save preset",
+                                                    "Couldn't save to " + presets::userFolder().getFullPathName());
+        safe->saveDialog.reset();
+    }), false);
+}
+
+void MasterPanel::listen()
+{
+    if (state == State::Listening)   // pressed again: stop
+    {
+        proc.cancelCapture();
+        state = State::Idle;
+        return;
+    }
+    if (state == State::Thinking) return;
+    plan.reset();
+    applyKey.setEnabled (false);
+    proc.startCapture();
+    state = State::Listening;
+}
+
+void MasterPanel::apply()
+{
+    if (plan == nullptr) return;
+    before = proc.currentValues();
+    beforePreset = proc.presetName;
+    beforeOrder = proc.getOrder();
+    proc.applyPlan (*plan);
+    state = State::Applied;
+    applyKey.setEnabled (false);
+    undoKey.setEnabled (true);
+}
+
+void MasterPanel::undo()
+{
+    if (before.empty()) return;
+    proc.applyValues (before, false);
+    proc.setOrder (beforeOrder);
+    proc.presetName = beforePreset;
+    before.clear();
+    undoKey.setEnabled (false);
+    applyKey.setEnabled (plan != nullptr);
+    state = plan != nullptr ? State::Ready : State::Idle;
+    if (onOrderChanged) onOrderChanged();
+}
+
+void MasterPanel::tick (float seconds)
+{
+    if (state == State::Listening)
+    {
+        std::vector<float> l, r;
+        double rate = 0;
+        if (proc.takeCapture (l, r, rate))
+        {
+            state = State::Thinking;
+            thinkingFor = 0;
+            cancel.store (false);
+            workerDone.store (false);
+            if (worker.joinable()) worker.join();
+            const auto g = goal;
+            const auto order = proc.assistOrder();
+            worker = std::thread ([this, l = std::move (l), r = std::move (r), rate, g, order]
+            {
+                plan = std::make_unique<bb::assist::Plan> (bb::assist::plan (l, r, rate, g, order, &cancel));
+                workerDone.store (true, std::memory_order_release);
+            });
+        }
+        else if (! proc.isCapturing())
+            state = State::Idle;   // stopped, or the host re-prepared
+    }
+    else if (state == State::Thinking)
+    {
+        thinkingFor += seconds;
+        if (workerDone.load (std::memory_order_acquire))
+        {
+            worker.join();
+            const bool ok = plan != nullptr && plan->outLufs > -100.0;
+            state = ok ? State::Ready : State::Failed;
+            applyKey.setEnabled (ok);
+        }
+    }
+    listenKey.setToggleState (state == State::Listening, juce::dontSendNotification);
+    for (auto* k : { &applyKey, &undoKey }) k->setAlpha (k->isEnabled() ? 1.0f : 0.4f);
+    if (proc.presetName != shownPreset) shownPreset = proc.presetName;
+    repaint();
+}
+
+void MasterPanel::mouseUp (const juce::MouseEvent& e)
+{
+    Panel::mouseUp (e);
+    if (presetLcd.contains (e.getPosition())) showPresetMenu();
+}
+
+void MasterPanel::paint (juce::Graphics& g)
+{
+    paintFinish (g, consoleFace, Finish::brushed);
+    nameplate (g, "BB-1", "PRESETS & ASSISTANT", "MASTER SECTION", juce::Colour (0xffe8e8e8));
+    legendOver (g, "PRESET", presetLcd.getCentreX() + 35, consoleInk, 6, 120);
+    rule (g, 580, consoleInk);
+
+    // the preset display
+    g.setColour (lcdBack);
+    g.fillRoundedRectangle (presetLcd.toFloat(), 3.0f);
+    g.setColour (lcdAmber);
+    g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
+    g.drawText (shownPreset, presetLcd.reduced (10, 0), juce::Justification::centredLeft);
+    g.setColour (consoleInk.withAlpha (0.5f));
+    g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
+    g.drawText (juce::String::fromUTF8 ("\xe2\x96\xbe"), presetLcd.reduced (10, 0), juce::Justification::centredRight);
+    juce::String blurb;
+    for (const auto& f : presets::factory())
+        if (shownPreset == f.name) blurb = f.blurb;
+    if (blurb.isEmpty()) blurb = shownPreset == "Assistant" ? "Set up by the assistant" : "Your preset";
+    g.setColour (consoleInk.withAlpha (0.75f));
+    g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
+    g.drawFittedText (blurb, juce::Rectangle<int> (360, 60, 210, 26), juce::Justification::centredLeft, 2, 1.0f);
+
+    // the assistant's display
+    g.setColour (lcdBack);
+    g.fillRoundedRectangle (statusLcd.toFloat(), 3.0f);
+    auto text = statusLcd.reduced (10, 6);
+    g.setColour (lcdAmber);
+    auto line = [&] (const juce::String& s, float h = 10.5f, juce::Colour c = lcdAmber)
+    {
+        g.setColour (c);
+        g.setFont (juce::FontOptions (h, juce::Font::bold));
+        g.drawText (s, text.removeFromTop ((int) h + 3), juce::Justification::centredLeft, true);
+    };
+    const auto dim = lcdAmber.withAlpha (0.6f);
+    switch (state)
+    {
+        case State::Idle:
+            line ("Not sure where to start? Pick a goal, play the loudest part of your mix and press LISTEN.");
+            line ("The assistant listens for 10 seconds, then suggests settings for every module.", 10.5f, dim);
+            line ("Nothing changes until you press APPLY, and UNDO puts your settings back.", 10.5f, dim);
+            break;
+        case State::Listening:
+        {
+            const float pr = proc.captureProgress();
+            line ("Listening: keep the mix playing" + juce::String (pr < 0.02f ? " (waiting for sound)" : "") + "...");
+            auto bar = text.removeFromTop (12).toFloat().withTrimmedRight (40.0f);
+            g.setColour (lcdAmber.withAlpha (0.18f));
+            g.fillRoundedRectangle (bar, 2.0f);
+            g.setColour (lcdAmber);
+            g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * pr), 2.0f);
+            g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            g.drawText (juce::String (pr * (float) BigBossProcessor::kCaptureSeconds, 0) + " s", juce::Rectangle<float> (bar.getRight() + 4, bar.getY() - 1, 36, 14),
+                        juce::Justification::centredLeft);
+            text.removeFromTop (6);
+            line ("Press LISTEN again to stop.", 10.5f, dim);
+            break;
+        }
+        case State::Thinking:
+            line ("Working it out" + juce::String::repeatedString (".", 1 + (int) (thinkingFor * 3) % 3));
+            line ("Measuring the mix, then trying the settings on what it heard.", 10.5f, dim);
+            break;
+        case State::Ready:
+        case State::Applied:
+        {
+            const auto& p = *plan;
+            line (juce::String (state == State::Applied ? "Applied: " : "Ready: ") + juce::String (p.outLufs, 1) + " LUFS, "
+                  + juce::String (p.outTruePeak, 1) + " dBTP (the mix came in at " + juce::String (p.in.integrated, 1) + " LUFS). "
+                  + (state == State::Applied ? "UNDO puts your settings back." : "Press APPLY to use it."));
+            juce::StringArray notes;
+            for (const auto& n : p.notes) notes.add (n);
+            g.setColour (dim);
+            g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+            g.drawFittedText (notes.joinIntoString (juce::String::fromUTF8 ("  \xc2\xb7  ")), text, juce::Justification::topLeft, 3, 1.0f);
+            break;
+        }
+        case State::Failed:
+            line (plan != nullptr && ! plan->notes.empty() ? juce::String (plan->notes.front()) : juce::String ("Something went wrong; try LISTEN again."));
+            break;
+    }
+}
+
 // ===================================================================== analyser
 
 AnalyserPanel::AnalyserPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)

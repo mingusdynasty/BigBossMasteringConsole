@@ -9,7 +9,9 @@
 #include "chain/EqModule.h"
 #include "chain/LimitModule.h"
 #include "chain/TapeModule.h"
+#include "assist/Assistant.h"
 #include "meter/MeterSuite.h"
+#include "Presets.h"
 
 class BigBossProcessor final : public juce::AudioProcessor
 {
@@ -37,10 +39,11 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
+    // the host's program list is the factory presets
+    int getNumPrograms() override { return (int) presets::factory().size(); }
+    int getCurrentProgram() override { return juce::jmax (0, currentFactory); }
+    void setCurrentProgram (int i) override { loadFactoryPreset (i); }
+    const juce::String getProgramName (int i) override;
     void changeProgramName (int, const juce::String&) override {}
 
     void getStateInformation (juce::MemoryBlock& destData) override;
@@ -77,6 +80,26 @@ public:
     // sample peak (dBFS) per channel since the last call, before the input trim or after the fader; for the meters
     float takePeakDb (bool output, int ch);
 
+    // presets (message thread). Loading one sets every parameter (and, for a user preset, the order),
+    // telling the host about each change.
+    void loadFactoryPreset (int index);
+    bool loadUserPreset (const juce::File&);
+    bool saveUserPreset (const juce::String& name);   // false if the file couldn't be written
+    juce::String presetName { "Init" };                // shown on the preset display; saved with the session
+    presets::Values currentValues() const;             // every parameter's plain value
+    void applyValues (const presets::Values&, bool othersToDefault);
+
+    // the assistant: capture a stretch of the input (before the trim, skipping near-silence), then
+    // apply a plan made from it
+    static constexpr double kCaptureSeconds = 10.0;
+    void startCapture();
+    void cancelCapture() { capturing.store (false); }
+    bool isCapturing() const { return capturing.load (std::memory_order_acquire); }
+    float captureProgress() const;   // 0 .. 1
+    bool takeCapture (std::vector<float>& l, std::vector<float>& r, double& sampleRate);   // once full
+    bb::assist::Order assistOrder() const;
+    void applyPlan (const bb::assist::Plan&);
+
 private:
     template <typename T> void processImpl (juce::AudioBuffer<T>& buffer);
     template <typename T> void bypassImpl (juce::AudioBuffer<T>& buffer);
@@ -91,6 +114,13 @@ private:
     std::atomic<float>* pInTrim = nullptr;
     std::atomic<float>* pVolume = nullptr;
     std::array<std::atomic<float>, 2> inPeak {}, outPeak {};
+    int currentFactory = 0;
+
+    std::array<std::vector<float>, 2> capture;
+    std::atomic<int> capturePos { 0 };
+    std::atomic<bool> capturing { false }, captureFull { false };
+    void captureBlock (const double* l, const double* r, int n);
+    void setOrderFromIds (const juce::String& commaSeparated);
 
     struct EqParams
     {

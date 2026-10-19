@@ -2,12 +2,24 @@
 
 A mastering console as one VST3: detailed loudness and level metering, and a chain modelled on mastering hardware rather than on other plugins.
 
-The console is a rack, in the manner of the owner's Vocal Chain plugin: one 1U faceplate per module in chain order, and the **OUTPUT** unit with the volume fader at the bottom. Press **ANALYSER** on the output unit and a 5U analyser (loudness, true peak, spectrum, stereo field) takes the modules' place; press it again to go back.
+The console is a rack, in the manner of the owner's Vocal Chain plugin: the **BB-1** master section (presets and the assistant) on top, one 1U faceplate per module in chain order, and the **OUTPUT** unit with the volume fader at the bottom. Press **ANALYSER** on the output unit and a 5U analyser (loudness, true peak, spectrum, stereo field) takes the modules' place; press it again to go back.
 
 - **Drag a module by its name plate** to move it in the chain. The others close up around it.
 - **Click the lamp** at the left of a faceplate to bypass that module.
-- **Resize by dragging** the corner (or the host window's edge): the whole rack scales as one, from 50% to 200%, and keeps its shape. It opens at 80% (1024 × 566), which fits a 1080p screen at 125% display scaling.
+- **Resize by dragging** the corner (or the host window's edge): the whole rack scales as one, from 50% to 200%, and keeps its shape. It opens at 75% (960 × 620), which fits a 1080p screen at 125% display scaling.
 - **The fader** sets the output level, from off to +12 dB, with IN and OUT peak meters and short-term, integrated and true-peak readouts beside it. **INPUT TRIM** sits next to it (±24 dB) and acts before the chain.
+
+## Presets and the assistant
+
+**Presets.** Ten factory presets (Init, Gentle Polish, Streaming Master, Loud & Punchy, Warm Tape Glue, Vocal Forward, Low End Control, Bright & Airy, Club Master, Transparent) and your own. Step through them with the arrows, or click the display or **BROWSE** for the list. **SAVE** stores every setting and the module order under a name you choose, as a `.bbpreset` file in your user app-data folder (`%APPDATA%\Big Boss Mastering Console\Presets` on Windows); the menu opens that folder. The factory presets are also the host's program list.
+
+**The assistant**, for when you don't know where to start. Pick a goal (**STREAM** −14 LUFS, **LOUD** −11, **CLUB** −9, **DYNAMIC** −16), play the loudest part of the mix and press **LISTEN**. It takes 10 seconds of audio (pauses don't count), then:
+
+- measures loudness, peak-to-loudness ratio, the tonal balance against a reference for mastered music (low end, low mids, mids, presence, air), how much the 5–10 kHz band dominates its loudest moments (sibilance), and how wide the bass is;
+- picks settings a mastering engineer might start from: half the EQ it would take to reach the reference (at most 3 dB, nothing under 0.75 dB), a 25 Hz high-pass and mono bass if the low end is wide, the darker or the cleaner tape, the de-esser only when "s" sounds stand out, and the compressor out if the mix is already dense;
+- renders what it heard through a private copy of the chain to check them: the compressor's thresholds move until it does 1 to 2.5 dB of work (by goal), made up so it doesn't change loudness, and the limiter's drive moves until the result lands on the goal. A mix that arrives louder than the goal is turned down at the input trim instead.
+
+The display shows the result and every change with its reason. Nothing changes until **APPLY**, and **UNDO** puts back what you had.
 
 ![The rack](docs/screenshot.png)
 
@@ -21,7 +33,8 @@ The console is a rack, in the manner of the owner's Vocal Chain plugin: one 1U f
 | 2 | Elysia museq-style mastering parametric, filters, Studer A80 tape; rack tabs | done |
 | 3 | Shadow Hills-style mastering compressor; our own limiter, scored against FabFilter Pro-L 2 | done |
 | 4 | A new multiband de-esser; the full console UI | done |
-| 5 | The rack UI from Vocal Chain: 1U units, output fader, analyser unit, drag to resize | this version |
+| 5 | The rack UI from Vocal Chain: 1U units, output fader, analyser unit, drag to resize | done |
+| 6 | Presets, and the assistant that sets the console up for a mix | this version |
 
 None of the hardware has public schematics, so the models are voiced from published specs, manuals and measurements of the units. Each module's notes will say which.
 
@@ -31,7 +44,7 @@ Five slots: **Parametric EQ, Compressor, Tape, De-esser, Limiter**. Drag a modul
 
 - **Latency never changes.** It is the sum of every module's latency, whatever is bypassed or reordered, so the host's delay compensation stays put. A bypassed module's dry path is delayed by the same amount.
 - **Bypass is a 10 ms crossfade**, and bypassed modules keep running, so switching one back in is seamless.
-- **Reordering mutes for about 10 ms** (fade out, switch, let the old audio clear, fade in) rather than glitching.
+- **Reordering dips for about 30 ms** rather than glitching: a 10 ms raised-cosine fade out, the switch, a hold while the old audio clears and the modules settle on their new inputs, and a 10 ms fade in.
 - **Input trim** (±24 dB) sits before the chain and the **volume fader** (off to +12 dB) after it.
 - The host's own bypass delays the dry signal by the chain's latency, so A/B against the host bypass stays time-aligned.
 
@@ -156,6 +169,8 @@ Linux needs: `libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxc
 - `bb_module_tests`: the EQ is flat when idle, its audio matches the drawn curve within 0.1 dB, boosts are broader than cuts, and the high-pass, mono bass, Warm's 2nd harmonic, click-free switching and reported latency all check out. The tape machine puts 3% THD at each tape's MOL, has unity small-signal gain, reports its true latency, distorts more on 456 than GP9 and more under-biased than over, holds more top end at 30 ips, has its head bump, keeps wow and flutter within spec, switches without clicks, and keeps level constant under Link. Each at several sample rates.
 - `bb_dynamics_tests`: the compressor's static curve, attack ordering, the optical stage's history-dependent release, the transformers' harmonics and the sidechain filter. The limiter's ceiling (sample and true peak) on a driven programme at 44.1, 48 and 96 kHz in every style, a 19 kHz tone, style switching under load, bit-exact transparency below the ceiling, its reported latency and stereo link. It also prints the distortion table above.
 - `bb_deesser_tests`: on a synthetic voice (a 180 Hz vowel with a band of noise for the "s"), the de-esser is bit-exact when idle in every mode, cuts a hot 6.4 kHz "s" by at least 4 dB in its own band and at least 3 dB less at 12.7 kHz, leaves the vowel within 0.1 dB, catches the same "s" 20 dB quieter within 1.5 dB, leaves a soft "s" alone, reports its true latency, and LISTEN is silent with nothing removed. At 44.1, 48 and 96 kHz.
+- `bb_module_tests` also reorders the full chain, every module working, on two low tones, and checks that the high-frequency residue around the switch is no more than the steady sound's (a click would show far above it).
+- `bb_assist_tests`: on synthetic mixes, the assistant lands every goal within 0.5 LU with true peak under the ceiling, compresses by 0.5 to 3.5 dB, adds air to a dull mix, cuts a muddy one at 300 Hz, brings the de-esser in for a sibilant one and leaves it out otherwise, monos wide bass, and trims a mix that is already too loud.
 - `bb_fuzz [seconds]`: random rates, block sizes, extreme signals, bypass and order changes, and random EQ, compressor, tape, de-esser and limiter settings through the chain and both meter suites; fails on any non-finite value.
 - pluginval at strictness 10: `pluginval --strictness-level 10 --validate-in-process "build/BigBoss_artefacts/Release/VST3/Big Boss Mastering Console.vst3"` (on Linux, under `xvfb-run -a`).
 - `-DBB_BUILD_SNAPSHOT=ON` builds `bb_snapshot out.png [seconds]`, which runs a synthetic mix through the console and renders the rack and the analyser to PNGs (`out.png` and `out-analyser.png`; the screenshots above).
@@ -167,13 +182,14 @@ GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand*
 | Path | What |
 |---|---|
 | `src/meter/` | Loudness (`LoudnessMeter`), true peak (`TruePeak`), stereo (`StereoMeter`) and the bundle the plugin uses (`MeterSuite`). No JUCE |
+| `src/assist/` | `Assistant`: the analysis, the rules and the render checks. No JUCE |
 | `src/chain/` | `Module` interface, `Chain` (order, bypass, latency), `EqModule`, `CompModule`, `TapeModule`, `DeEssModule`, `LimitModule`. No JUCE |
 | `src/eq/` | `EqDesign` (band shapes, shared with the editor's scope) and `ClassAEq`. No JUCE |
 | `src/tape/` | `TapeMachine`. No JUCE |
 | `src/dyn/` | `DualCompressor` and `Limiter`. No JUCE |
 | `src/deess/` | `DeEsser`. No JUCE |
 | `src/dsp/` | Shared with mingusdynasty/chocolatefudgeverb, copied at `6edfcdc` (namespace `cf`): tape heads and Jiles–Atherton hysteresis, Hot Sauce saturator, tube and transformer stages, half-band filters, level match. Keep changes in step with that repo. `Oversampler` is ours |
-| `src/plugin/` | JUCE processor and editor; `Params` (parameter ids and ranges); `ui/` holds the analyser's look, meter panel, spectrum and goniometer; `rack/` holds the rack: `RackLookAndFeel`, `KnobRenderer` and `Widgets` (ported from mingusdynasty's Vocal Chain, namespace `kit`) and `Panels` (one faceplate per module, the output unit and the analyser unit) |
+| `src/plugin/` | JUCE processor and editor; `Params` (parameter ids and ranges); `Presets` (the factory set and the user folder); `ui/` holds the analyser's look, meter panel, spectrum and goniometer; `rack/` holds the rack: `RackLookAndFeel`, `KnobRenderer` and `Widgets` (ported from mingusdynasty's Vocal Chain, namespace `kit`) and `Panels` (one faceplate per module, the master section, the output unit and the analyser unit) |
 | `resources/fonts/` | Barlow, under the SIL Open Font License (`OFL-barlow.txt`) |
 | `tests/`, `tools/snapshot/` | Engine tests, fuzzer, UI snapshot tool |
 

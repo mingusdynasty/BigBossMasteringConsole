@@ -12,9 +12,15 @@
 #include "plugin/ui/Spectrum.h"
 #include "tape/TapeMachine.h"
 
+#include "assist/Assistant.h"
+#include "chain/Chain.h"
+#include "plugin/Presets.h"
+
 #include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <vector>
 
 class BigBossProcessor;
@@ -201,6 +207,54 @@ private:
     LimitHistory history;
     VuMeter meter;
     float lastReduction = 0.0f;
+};
+
+// ------------------------------------------------------------------- master section
+
+// the top unit: presets (factory and the user's own) and the assistant, which listens to the mix
+// and sets the console up for a loudness goal
+class MasterPanel final : public Panel
+{
+public:
+    explicit MasterPanel (BigBossProcessor&);
+    ~MasterPanel() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick (float seconds) override;
+
+    std::function<void()> onOrderChanged;   // a preset or undo moved the modules
+
+    // for the snapshot tool
+    void pressListen() { listen(); }
+    bool busy() const { return state == State::Listening || state == State::Thinking; }
+
+private:
+    void showPresetMenu();
+    void stepPreset (int delta);
+    void savePreset();
+    void listen();
+    void apply();
+    void undo();
+
+    BigBossProcessor& proc;
+    juce::ToggleButton prev { "<" }, next { ">" }, save { "SAVE" }, browse { "BROWSE" };
+    juce::ToggleButton listenKey { "LISTEN" }, applyKey { "APPLY" }, undoKey { "UNDO" };
+    std::array<juce::ToggleButton, 4> goalKeys;
+    juce::Rectangle<int> presetLcd { 190, 22, 300, 30 }, statusLcd { 600, 52, 570, 58 };
+    juce::String shownPreset;
+    std::unique_ptr<juce::AlertWindow> saveDialog;
+
+    enum class State { Idle, Listening, Thinking, Ready, Applied, Failed } state = State::Idle;
+    bb::assist::Goal goal = bb::assist::Goal::Streaming;
+    std::thread worker;
+    std::atomic<bool> cancel { false }, workerDone { false };
+    std::unique_ptr<bb::assist::Plan> plan;
+    presets::Values before;   // for UNDO
+    juce::String beforePreset;
+    bb::Chain::Order beforeOrder {};
+    float thinkingFor = 0;
+
+    void mouseUp (const juce::MouseEvent&) override;
 };
 
 // ------------------------------------------------------------------- output and analyser
