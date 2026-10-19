@@ -1,7 +1,9 @@
 // Fuzzing: random sample rates, block sizes, signals, bypass and order changes through the whole chain
 // and both meter suites. Fails on any non-finite output or reading. Argument: seconds of audio per run.
 #include "chain/Chain.h"
+#include "chain/CompModule.h"
 #include "chain/EqModule.h"
+#include "chain/LimitModule.h"
 #include "chain/TapeModule.h"
 #include "meter/MeterSuite.h"
 
@@ -27,11 +29,13 @@ int main (int argc, char** argv)
         bb::Chain chain;
         auto* tape = new bb::TapeModule();
         auto* eq = new bb::EqModule();
+        auto* comp = new bb::CompModule();
+        auto* lim = new bb::LimitModule();
         chain.add (std::unique_ptr<bb::Module> (eq));
-        chain.add (std::make_unique<bb::EmptySlot> ("comp", "Comp"));
+        chain.add (std::unique_ptr<bb::Module> (comp));
         chain.add (std::unique_ptr<bb::Module> (tape));
         chain.add (std::make_unique<bb::EmptySlot> ("deess", "De-ess"));
-        chain.add (std::make_unique<bb::EmptySlot> ("limit", "Limit"));
+        chain.add (std::unique_ptr<bb::Module> (lim));
         chain.prepare (sr, maxBlock);
         bb::MeterSuite in, out;
         in.prepare (sr, 2);
@@ -86,6 +90,20 @@ int main (int argc, char** argv)
                 e.lpfHz = (rng() & 1) ? 15000 + 5000 * u (rng) : 0;
                 e.monoBassHz = (rng() & 1) ? 150 + 100 * u (rng) : 0;
                 e.outputDb = 6 * u (rng);
+            }
+            if (rng() % 10 == 0)
+            {
+                auto& c = comp->settings;
+                c.opto = rng() & 1; c.optoThreshold = -20 + 20 * u (rng); c.optoGain = 6 + 6 * u (rng);
+                c.vca = rng() & 1; c.vcaThreshold = -20 + 20 * u (rng); c.vcaGain = 6 + 6 * u (rng);
+                c.ratio = (int) (rng() % 6); c.attack = (int) (rng() % 6); c.recovery = (int) (rng() % 6);
+                c.transformer = (int) (rng() % 3); c.sidechainHpf = rng() & 1;
+            }
+            if (rng() % 10 == 0)
+            {
+                auto& m = lim->settings;
+                m.driveDb = 12 + 12 * u (rng); m.ceilingDb = -6 + 6 * u (rng); m.autoRelease = rng() & 1;
+                m.releaseMs = 500 + 499 * u (rng); m.style = (int) (rng() % 3); m.truePeak = rng() & 1; m.link = 0.5 + 0.5 * u (rng);
             }
             if (rng() % 50 == 0) out.requestReset();
 

@@ -1,7 +1,9 @@
 #include "PluginEditor.h"
 
 #include "Params.h"
+#include "ui/CompUnit.h"
 #include "ui/EqUnit.h"
+#include "ui/LimitUnit.h"
 #include "ui/TapeUnit.h"
 
 using namespace bbui;
@@ -53,6 +55,10 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), 
             u = std::make_unique<rack::EqUnit> (proc.apvts, [this] { return proc.eqSettings(); });
         else if (id == "tape")
             u = std::make_unique<rack::TapeUnit> (proc.apvts, proc.tapeMachine(), [this] { return proc.tapeSettings(); });
+        else if (id == "comp")
+            u = std::make_unique<rack::CompUnit> (proc.apvts, proc.compressor());
+        else if (id == "limit")
+            u = std::make_unique<rack::LimitUnit> (proc.apvts, proc.limiter(), [this] { return proc.limitSettings(); });
         else
         {
             const juce::String titles[] = { "", "MASTERING COMPRESSOR", "", "MULTIBAND DE-ESSER", "MASTERING LIMITER" };
@@ -162,11 +168,9 @@ void BigBossEditor::timerCallback()
         spectrum.tick();
         gonio.tick();
     }
-    else
-    {
-        units[(size_t) tab - 1]->tick();
-        strip.tick (meters.truePeakBar (0), meters.truePeakBar (1));
-    }
+    else strip.tick (meters.truePeakBar (0), meters.truePeakBar (1));
+    // every unit, shown or not, so meters and the limiter's history have no gap when a tab opens
+    for (auto& u : units) u->tick();
     chain.repaint();
 }
 

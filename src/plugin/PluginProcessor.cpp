@@ -4,10 +4,10 @@
 
 const BigBossProcessor::SlotInfo BigBossProcessor::kSlots[kNumSlots] = {
     { "eq",    "Parametric EQ", "" },
-    { "comp",  "Compressor",    "step 3" },
+    { "comp",  "Compressor",    "" },
     { "tape",  "Tape",          "" },
     { "deess", "De-esser",      "step 4" },
-    { "limit", "Limiter",       "step 3" },
+    { "limit", "Limiter",       "" },
 };
 
 namespace
@@ -42,6 +42,16 @@ BigBossProcessor::BigBossProcessor()
             tape = new bb::TapeModule();
             chain.add (std::unique_ptr<bb::Module> (tape));
         }
+        else if (id == "comp")
+        {
+            comp = new bb::CompModule();
+            chain.add (std::unique_ptr<bb::Module> (comp));
+        }
+        else if (id == "limit")
+        {
+            limit = new bb::LimitModule();
+            chain.add (std::unique_ptr<bb::Module> (limit));
+        }
         else
             chain.add (std::make_unique<bb::EmptySlot> (kSlots[s].id, kSlots[s].name));
         pBypass[(size_t) s] = apvts.getRawParameterValue (bypassId (s));
@@ -61,6 +71,41 @@ BigBossProcessor::BigBossProcessor()
     pEq.lpf = raw (pid::eqLpf); pEq.mono = raw (pid::eqMono); pEq.out = raw (pid::eqOut);
     pTape = { raw (pid::tapeSpeed), raw (pid::tapeEq), raw (pid::tapeType), raw (pid::tapeBias),
               raw (pid::tapeIn), raw (pid::tapeOut), raw (pid::tapeLink), raw (pid::tapeWow) };
+    pComp = { raw (pid::compOpto), raw (pid::compOptoThr), raw (pid::compOptoGain), raw (pid::compVca), raw (pid::compVcaThr),
+              raw (pid::compRatio), raw (pid::compAttack), raw (pid::compRecovery), raw (pid::compVcaGain), raw (pid::compXfmr),
+              raw (pid::compScHpf) };
+    pLimit = { raw (pid::limDrive), raw (pid::limCeiling), raw (pid::limStyle), raw (pid::limAuto), raw (pid::limRelease),
+               raw (pid::limTp), raw (pid::limLink) };
+}
+
+bb::DualCompressor::Settings BigBossProcessor::compSettings() const
+{
+    bb::DualCompressor::Settings s;
+    s.opto = pComp.opto->load() > 0.5f;
+    s.optoThreshold = pComp.optoThr->load();
+    s.optoGain = pComp.optoGain->load();
+    s.vca = pComp.vca->load() > 0.5f;
+    s.vcaThreshold = pComp.vcaThr->load();
+    s.ratio = juce::roundToInt (pComp.ratio->load());
+    s.attack = juce::roundToInt (pComp.attack->load());
+    s.recovery = juce::roundToInt (pComp.recovery->load());
+    s.vcaGain = pComp.vcaGain->load();
+    s.transformer = juce::roundToInt (pComp.xfmr->load());
+    s.sidechainHpf = pComp.scHpf->load() > 0.5f;
+    return s;
+}
+
+bb::Limiter::Settings BigBossProcessor::limitSettings() const
+{
+    bb::Limiter::Settings s;
+    s.driveDb = pLimit.drive->load();
+    s.ceilingDb = pLimit.ceiling->load();
+    s.style = juce::roundToInt (pLimit.style->load());
+    s.autoRelease = pLimit.autoRel->load() > 0.5f;
+    s.releaseMs = pLimit.release->load();
+    s.truePeak = pLimit.tp->load() > 0.5f;
+    s.link = pLimit.link->load() / 100.0;
+    return s;
 }
 
 bb::eq::Settings BigBossProcessor::eqSettings() const
@@ -110,6 +155,8 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     bufR.assign ((size_t) block, 0.0);
     eq->settings = eqSettings();
     tape->settings = tapeSettings();
+    comp->settings = compSettings();
+    limit->settings = limitSettings();
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     chain.prepare (sampleRate, block);
     const int nch = juce::jmax (1, getTotalNumInputChannels());
@@ -149,6 +196,8 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
 
     eq->settings = eqSettings();
     tape->settings = tapeSettings();
+    comp->settings = compSettings();
+    limit->settings = limitSettings();
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     const double inTarget  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
     const double outTarget = juce::Decibels::decibelsToGain ((double) pOutTrim->load());

@@ -89,6 +89,20 @@ private:
     float needle = -20.0f, ms = 0.0f;
 };
 
+// Gain-reduction meter: same face as the VU, needle resting at 0 on the right and swinging left.
+// The scale is square-root spaced so the first few dB, where mastering lives, read clearly.
+class GrMeter final : public juce::Component
+{
+public:
+    GrMeter (juce::String label, float maxDb);
+    void push (float reductionDb, float fps);   // feed once per frame
+    void paint (juce::Graphics&) override;
+
+private:
+    juce::String label;
+    float maxDb, needle = 0.0f;
+};
+
 // Blank 3U plate for a module that is not built yet
 class BlankUnit final : public Unit
 {

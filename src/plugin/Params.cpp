@@ -77,5 +77,37 @@ void addLayout (juce::AudioProcessorValueTreeState::ParameterLayout& layout, con
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         P { tapeWow, 1 }, "Tape Wow & Flutter", juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 25.0f,
         juce::AudioParameterFloatAttributes().withLabel ("%").withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + "%"; })));
+
+    // compressor
+    auto thr = [] (float lo, float hi) { return juce::NormalisableRange<float> (lo, hi, 0.1f); };
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { compOpto, 1 }, "Comp Optical In", true));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (P { compOptoThr, 1 }, "Comp Optical Threshold", thr (-40.0f, 0.0f), -16.0f, dbAttr()));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (P { compOptoGain, 1 }, "Comp Optical Gain", thr (-6.0f, 12.0f), 0.0f, dbAttr()));
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { compVca, 1 }, "Comp Discrete In", true));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (P { compVcaThr, 1 }, "Comp Discrete Threshold", thr (-40.0f, 0.0f), -12.0f, dbAttr()));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (P { compRatio, 1 }, "Comp Ratio",
+                                                              juce::StringArray { "1.2:1", "2:1", "3:1", "4:1", "6:1", "Flood" }, 1));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (P { compAttack, 1 }, "Comp Attack",
+                                                              juce::StringArray { "0.1 ms", "0.3 ms", "1 ms", "3 ms", "10 ms", "30 ms" }, 3));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (P { compRecovery, 1 }, "Comp Recovery",
+                                                              juce::StringArray { "100 ms", "250 ms", "400 ms", "800 ms", "1.2 s", "Dual" }, 5));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (P { compVcaGain, 1 }, "Comp Discrete Gain", thr (-6.0f, 12.0f), 0.0f, dbAttr()));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (P { compXfmr, 1 }, "Comp Transformer", juce::StringArray { "Nickel", "Iron", "Steel" }, 0));
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { compScHpf, 1 }, "Comp Sidechain High-pass", true));
+
+    // limiter
+    layout.add (std::make_unique<juce::AudioParameterFloat> (P { limDrive, 1 }, "Limiter Drive", thr (0.0f, 24.0f), 0.0f, dbAttr()));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        P { limCeiling, 1 }, "Limiter Ceiling", juce::NormalisableRange<float> (-12.0f, 0.0f, 0.05f), -1.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("dBTP").withStringFromValueFunction ([] (float v, int) { return juce::String (v, 2) + " dBTP"; })));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (P { limStyle, 1 }, "Limiter Style", juce::StringArray { "Transparent", "Punch", "Dense" }, 0));
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { limAuto, 1 }, "Limiter Auto Release", true));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        P { limRelease, 1 }, "Limiter Release", logRange (1.0f, 1000.0f), 100.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return juce::String (v, v < 10 ? 1 : 0) + " ms"; })));
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { limTp, 1 }, "Limiter True Peak", true));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        P { limLink, 1 }, "Limiter Stereo Link", juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("%").withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + "%"; })));
 }
 } // namespace pid
