@@ -109,5 +109,15 @@ void addLayout (juce::AudioProcessorValueTreeState::ParameterLayout& layout, con
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         P { limLink, 1 }, "Limiter Stereo Link", juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f,
         juce::AudioParameterFloatAttributes().withLabel ("%").withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + "%"; })));
+
+    // de-esser
+    layout.add (std::make_unique<juce::AudioParameterFloat> (P { deessThr, 1 }, "De-esser Threshold", thr (-24.0f, 12.0f), -6.0f, dbAttr()));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (P { deessRange, 1 }, "De-esser Range", thr (0.0f, 18.0f), 8.0f, dbAttr()));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (P { deessFreq, 1 }, "De-esser Frequency", logRange (3000.0f, 8000.0f), 4500.0f, hzAttr));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        P { deessRelease, 1 }, "De-esser Release", logRange (10.0f, 200.0f), 50.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " ms"; })));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (P { deessMode, 1 }, "De-esser Mode", juce::StringArray { "Stereo", "Mid", "Side" }, 1));
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { deessListen, 1 }, "De-esser Listen", false));
 }
 } // namespace pid

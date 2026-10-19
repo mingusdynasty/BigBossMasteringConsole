@@ -32,6 +32,10 @@ inline const juce::String compOpto = "comp_opto", compOptoThr = "comp_opto_thr",
 inline const juce::String limDrive = "limit_drive", limCeiling = "limit_ceiling", limStyle = "limit_style", limAuto = "limit_auto",
                           limRelease = "limit_release", limTp = "limit_tp", limLink = "limit_link";
 
+// de-esser
+inline const juce::String deessThr = "deess_thresh", deessRange = "deess_range", deessFreq = "deess_freq",
+                          deessRelease = "deess_release", deessMode = "deess_mode", deessListen = "deess_listen";
+
 juce::String hzText (float hz);   // "OFF", "80 Hz", "4.5 kHz"
 
 // a log frequency range whose bottom (or top) few percent of travel is OFF (value 0)

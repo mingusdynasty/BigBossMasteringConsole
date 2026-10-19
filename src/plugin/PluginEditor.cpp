@@ -2,6 +2,7 @@
 
 #include "Params.h"
 #include "ui/CompUnit.h"
+#include "ui/DeEssUnit.h"
 #include "ui/EqUnit.h"
 #include "ui/LimitUnit.h"
 #include "ui/TapeUnit.h"
@@ -57,6 +58,8 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), 
             u = std::make_unique<rack::TapeUnit> (proc.apvts, proc.tapeMachine(), [this] { return proc.tapeSettings(); });
         else if (id == "comp")
             u = std::make_unique<rack::CompUnit> (proc.apvts, proc.compressor());
+        else if (id == "deess")
+            u = std::make_unique<rack::DeEssUnit> (proc.apvts, proc.deesser(), [this] { return proc.deessSettings(); });
         else if (id == "limit")
             u = std::make_unique<rack::LimitUnit> (proc.apvts, proc.limiter(), [this] { return proc.limitSettings(); });
         else

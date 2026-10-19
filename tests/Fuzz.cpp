@@ -2,6 +2,7 @@
 // and both meter suites. Fails on any non-finite output or reading. Argument: seconds of audio per run.
 #include "chain/Chain.h"
 #include "chain/CompModule.h"
+#include "chain/DeEssModule.h"
 #include "chain/EqModule.h"
 #include "chain/LimitModule.h"
 #include "chain/TapeModule.h"
@@ -31,10 +32,11 @@ int main (int argc, char** argv)
         auto* eq = new bb::EqModule();
         auto* comp = new bb::CompModule();
         auto* lim = new bb::LimitModule();
+        auto* ds = new bb::DeEssModule();
         chain.add (std::unique_ptr<bb::Module> (eq));
         chain.add (std::unique_ptr<bb::Module> (comp));
         chain.add (std::unique_ptr<bb::Module> (tape));
-        chain.add (std::make_unique<bb::EmptySlot> ("deess", "De-ess"));
+        chain.add (std::unique_ptr<bb::Module> (ds));
         chain.add (std::unique_ptr<bb::Module> (lim));
         chain.prepare (sr, maxBlock);
         bb::MeterSuite in, out;
@@ -104,6 +106,12 @@ int main (int argc, char** argv)
                 auto& m = lim->settings;
                 m.driveDb = 12 + 12 * u (rng); m.ceilingDb = -6 + 6 * u (rng); m.autoRelease = rng() & 1;
                 m.releaseMs = 500 + 499 * u (rng); m.style = (int) (rng() % 3); m.truePeak = rng() & 1; m.link = 0.5 + 0.5 * u (rng);
+            }
+            if (rng() % 10 == 0)
+            {
+                auto& d = ds->settings;
+                d.thresholdDb = -6 + 18 * u (rng); d.rangeDb = 12 + 12 * u (rng); d.freq = 5500 + 2500 * u (rng);
+                d.releaseMs = 100 + 100 * u (rng); d.mode = (int) (rng() % 3); d.listen = rng() & 1;
             }
             if (rng() % 50 == 0) out.requestReset();
 

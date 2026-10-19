@@ -5,6 +5,7 @@
 
 #include "chain/Chain.h"
 #include "chain/CompModule.h"
+#include "chain/DeEssModule.h"
 #include "chain/EqModule.h"
 #include "chain/LimitModule.h"
 #include "chain/TapeModule.h"
@@ -62,9 +63,11 @@ public:
     bb::TapeMachine::Settings tapeSettings() const;
     bb::DualCompressor::Settings compSettings() const;
     bb::Limiter::Settings limitSettings() const;
+    bb::DeEsser::Settings deessSettings() const;
     const bb::TapeMachine& tapeMachine() const { return tape->machine; }
     const bb::DualCompressor& compressor() const { return comp->comp; }
     bb::Limiter& limiter() { return limit->limiter; }
+    const bb::DeEsser& deesser() const { return deess->deesser; }
 
     juce::AudioProcessorValueTreeState apvts;
     bb::MeterSuite inMeters, outMeters;
@@ -80,6 +83,7 @@ private:
     bb::TapeModule* tape = nullptr;
     bb::CompModule* comp = nullptr;
     bb::LimitModule* limit = nullptr;
+    bb::DeEssModule* deess = nullptr;
     std::array<std::atomic<float>*, kNumSlots> pBypass {};
     std::atomic<float>* pInTrim = nullptr;
     std::atomic<float>* pOutTrim = nullptr;
@@ -104,6 +108,10 @@ private:
         std::atomic<float>* drive = nullptr, *ceiling = nullptr, *style = nullptr, *autoRel = nullptr, *release = nullptr,
                           *tp = nullptr, *link = nullptr;
     } pLimit;
+    struct DeEssParams
+    {
+        std::atomic<float>* thr = nullptr, *range = nullptr, *freq = nullptr, *release = nullptr, *mode = nullptr, *listen = nullptr;
+    } pDeess;
 
     std::vector<double> bufL, bufR;
     double inGain = 1, outGain = 1;
