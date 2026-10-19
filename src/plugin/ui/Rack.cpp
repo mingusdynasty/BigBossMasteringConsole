@@ -51,7 +51,9 @@ void RackLook::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, 
     const auto legend = legendFor (s);
     const auto area = juce::Rectangle<int> (x, y, w, h).toFloat();
     const bool hasScale = s.getProperties().contains ("scale");
-    const float r = juce::jmin (area.getWidth(), area.getHeight()) * 0.5f - (hasScale ? 15.0f : 4.0f);
+    // with a scale, leave room for its legends: up to 20 px either side of the tick, 10 px above
+    const float r = hasScale ? juce::jmin (area.getWidth() * 0.5f - 32.0f, area.getHeight() * 0.5f - 17.0f)
+                             : juce::jmin (area.getWidth(), area.getHeight()) * 0.5f - 4.0f;
     const auto c = area.getCentre();
     const float angle = start + pos * (end - start);
 
@@ -369,6 +371,69 @@ void VuMeter::paint (juce::Graphics& g)
     g.restoreState();
 
     // glass: a soft highlight across the top
+    g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.22f), face.getX(), face.getY(),
+                                             juce::Colours::transparentWhite, face.getX(), face.getCentreY(), false));
+    g.fillRoundedRectangle (face, 3.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.6f));
+    g.drawRoundedRectangle (face, 3.0f, 1.5f);
+}
+
+// ---------------------------------------------------------------- gain reduction
+
+GrMeter::GrMeter (juce::String l, float m) : label (std::move (l)), maxDb (m) { setOpaque (true); }
+
+void GrMeter::push (float reductionDb, float fps)
+{
+    // the movement's ballistics: quick to fall (about 10 ms), 300 ms to come back
+    const float target = juce::jlimit (0.0f, maxDb * 1.05f, reductionDb);
+    const float c = 1.0f - std::exp (-1.0f / ((target > needle ? 0.01f : 0.3f) * fps));
+    const float prev = needle;
+    needle += (target - needle) * c;
+    if (std::abs (needle - prev) > 0.005f) repaint();
+}
+
+void GrMeter::paint (juce::Graphics& g)
+{
+    auto b = getLocalBounds().toFloat();
+    g.setColour (juce::Colour (0xff141414));
+    g.fillRect (b);
+    auto face = b.reduced (5.0f);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff7e7b8), face.getCentreX(), face.getY() + face.getHeight() * 0.35f,
+                                             juce::Colour (0xffd9b86a), face.getX(), face.getBottom(), true));
+    g.fillRoundedRectangle (face, 3.0f);
+
+    const float radius = juce::jmin (face.getHeight() * 1.02f, (face.getWidth() * 0.5f - 20.0f) / std::sin (0.82f));
+    const juce::Point<float> pivot (face.getCentreX(), face.getY() + face.getHeight() * 0.3f + radius);
+    auto angleOf = [this] (float db) { return juce::jmap (std::sqrt (juce::jlimit (0.0f, 1.1f, db / maxDb)), 0.82f, -0.82f); };
+    juce::Path arc;
+    arc.addCentredArc (pivot.x, pivot.y, radius, radius, 0.0f, angleOf (maxDb), angleOf (0.0f), true);
+    const juce::Colour ink (0xff1d1a14);
+    g.setColour (ink);
+    g.strokePath (arc, juce::PathStrokeType (1.2f));
+    g.setFont (engraving (9.0f, false));
+    for (float db : { 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 10.0f, 12.0f, 15.0f, 20.0f })
+    {
+        if (db > maxDb) continue;
+        const float a = angleOf (db);
+        g.drawLine ({ pivot.getPointOnCircumference (radius, a), pivot.getPointOnCircumference (radius + 6.0f, a) }, 1.2f);
+        g.drawText (juce::String ((int) db), juce::Rectangle<float> (22.0f, 10.0f).withCentre (pivot.getPointOnCircumference (radius + 14.0f, a)),
+                    juce::Justification::centred);
+    }
+    g.setFont (engraving (12.0f, true));
+    g.drawText ("GAIN REDUCTION", face.withTrimmedTop (face.getHeight() * 0.48f).withHeight (16.0f), juce::Justification::centred);
+    g.setFont (engraving (8.0f, false));
+    g.drawText (label, face.withTrimmedTop (face.getHeight() * 0.48f + 16.0f).withHeight (12.0f), juce::Justification::centred);
+
+    g.saveState();
+    g.reduceClipRegion (face.toNearestInt());
+    const float a = angleOf (needle);
+    const auto tip = pivot.getPointOnCircumference (radius + 4.0f, a);
+    g.setColour (juce::Colours::black.withAlpha (0.18f));
+    g.drawLine ({ pivot.translated (3.0f, 3.0f), tip.translated (3.0f, 3.0f) }, 1.6f);
+    g.setColour (juce::Colour (0xff111111));
+    g.drawLine ({ pivot, tip }, 1.4f);
+    g.restoreState();
+
     g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.22f), face.getX(), face.getY(),
                                              juce::Colours::transparentWhite, face.getX(), face.getCentreY(), false));
     g.fillRoundedRectangle (face, 3.0f);

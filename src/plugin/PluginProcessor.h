@@ -4,7 +4,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "chain/Chain.h"
+#include "chain/CompModule.h"
 #include "chain/EqModule.h"
+#include "chain/LimitModule.h"
 #include "chain/TapeModule.h"
 #include "meter/MeterSuite.h"
 
@@ -58,7 +60,11 @@ public:
     // the modules' settings as the parameters stand now; safe from any thread
     bb::eq::Settings eqSettings() const;
     bb::TapeMachine::Settings tapeSettings() const;
+    bb::DualCompressor::Settings compSettings() const;
+    bb::Limiter::Settings limitSettings() const;
     const bb::TapeMachine& tapeMachine() const { return tape->machine; }
+    const bb::DualCompressor& compressor() const { return comp->comp; }
+    bb::Limiter& limiter() { return limit->limiter; }
 
     juce::AudioProcessorValueTreeState apvts;
     bb::MeterSuite inMeters, outMeters;
@@ -72,6 +78,8 @@ private:
     bb::Chain chain;
     bb::EqModule* eq = nullptr;
     bb::TapeModule* tape = nullptr;
+    bb::CompModule* comp = nullptr;
+    bb::LimitModule* limit = nullptr;
     std::array<std::atomic<float>*, kNumSlots> pBypass {};
     std::atomic<float>* pInTrim = nullptr;
     std::atomic<float>* pOutTrim = nullptr;
@@ -86,6 +94,16 @@ private:
         std::atomic<float>* speed = nullptr, *standard = nullptr, *type = nullptr, *bias = nullptr,
                           *in = nullptr, *out = nullptr, *link = nullptr, *wow = nullptr;
     } pTape;
+    struct CompParams
+    {
+        std::atomic<float>* opto = nullptr, *optoThr = nullptr, *optoGain = nullptr, *vca = nullptr, *vcaThr = nullptr, *ratio = nullptr,
+                          *attack = nullptr, *recovery = nullptr, *vcaGain = nullptr, *xfmr = nullptr, *scHpf = nullptr;
+    } pComp;
+    struct LimitParams
+    {
+        std::atomic<float>* drive = nullptr, *ceiling = nullptr, *style = nullptr, *autoRel = nullptr, *release = nullptr,
+                          *tp = nullptr, *link = nullptr;
+    } pLimit;
 
     std::vector<double> bufL, bufR;
     double inGain = 1, outGain = 1;

@@ -28,6 +28,8 @@ int main (int argc, char** argv)
     set ("eq_b4_gain", 3.0f); set ("eq_b4_freq", 14000.0f);
     set ("eq_hpf", 25.0f); set ("eq_mono", 120.0f);
     set ("tape_in", -6.0f);   // the demo mix is hot: bring it to about 0 VU
+    set ("comp_opto_thr", -22.0f); set ("comp_vca_thr", -16.0f); set ("comp_xfmr", 1.0f);
+    set ("limit_drive", 12.0f);
     std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
     auto* editor = static_cast<BigBossEditor*> (ed.get());
 
