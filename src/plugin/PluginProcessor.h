@@ -72,7 +72,10 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     bb::MeterSuite inMeters, outMeters;
     std::atomic<double> sampleRateHz { 48000.0 };
-    int editorTab = 0;   // the tab the editor last showed, so reopening it lands there
+    bool editorAnalysis = false;   // the editor last showed the analyser in place of the modules
+
+    // sample peak (dBFS) per channel since the last call, before the input trim or after the fader; for the meters
+    float takePeakDb (bool output, int ch);
 
 private:
     template <typename T> void processImpl (juce::AudioBuffer<T>& buffer);
@@ -86,7 +89,8 @@ private:
     bb::DeEssModule* deess = nullptr;
     std::array<std::atomic<float>*, kNumSlots> pBypass {};
     std::atomic<float>* pInTrim = nullptr;
-    std::atomic<float>* pOutTrim = nullptr;
+    std::atomic<float>* pVolume = nullptr;
+    std::array<std::atomic<float>, 2> inPeak {}, outPeak {};
 
     struct EqParams
     {

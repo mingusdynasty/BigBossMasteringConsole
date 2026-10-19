@@ -1,7 +1,7 @@
 // Renders the console to PNGs after running a synthetic mix through it, so the UI can be checked
 // without a host. Usage: bb_snapshot out.png [seconds]
-// Writes out.png (the analysis tab) and out-<tab>.png for each module tab, with a demo setting on
-// the EQ and the tape so their panels have something to show.
+// Writes out.png (the rack) and out-analyser.png (the analyser in place of the modules), with demo
+// settings so the panels have something to show.
 #include "plugin/PluginEditor.h"
 #include "plugin/PluginProcessor.h"
 
@@ -62,16 +62,17 @@ int main (int argc, char** argv)
         nextBlock();
         if ((done / block) % 50 == 0) editor->refreshNow();
     }
-    const char* names[] = { "", "eq", "comp", "tape", "deess", "limit" };
-    for (int tab = 0; tab < BigBossEditor::kNumTabs; ++tab)
+    // the rack at its design size, then the analyser in place of the modules
+    ed->setSize (BigBossEditor::designWidth, BigBossEditor::designHeight);
+    for (int view = 0; view < 2; ++view)
     {
-        editor->showTab (tab);
-        for (int f = 0; f < 30; ++f)   // a second of frames, so the VU needles and the strip settle
+        editor->showAnalyser (view == 1);
+        for (int f = 0; f < 30; ++f)   // a second of frames, so the needles settle
         {
             for (int k = 0; k < 3; ++k) nextBlock();
             editor->refreshNow();
         }
-        const auto file = tab == 0 ? out : out.getSiblingFile (out.getFileNameWithoutExtension() + "-" + names[tab] + ".png");
+        const auto file = view == 0 ? out : out.getSiblingFile (out.getFileNameWithoutExtension() + "-analyser.png");
         const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
         file.deleteFile();
         juce::FileOutputStream os (file);

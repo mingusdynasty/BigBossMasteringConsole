@@ -1,16 +1,12 @@
+// The console as a rack, like the owner's Vocal Chain: one 1U unit per module in chain order, then
+// the output fader. The analyser is a 5U unit that takes the modules' place when its key is on.
+// Everything is laid out in a fixed design space and scaled as a whole, so the window can be
+// dragged to any size (50% to 200%) and the rack keeps its proportions.
 #pragma once
 
 #include "PluginProcessor.h"
-#include "ui/ChainStrip.h"
-#include "ui/Look.h"
-#include "ui/MeterPanel.h"
-#include "ui/MeterStrip.h"
-#include "ui/Rack.h"
-#include "ui/Spectrum.h"
+#include "rack/Panels.h"
 
-// The console: header, then the ANALYSIS button and the chain strip, which double as the tabs.
-// ANALYSIS is the metering dashboard; clicking a module shows it as a rack unit, with a slim
-// loudness and peak strip under it.
 class BigBossEditor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -19,44 +15,29 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
-    void refreshNow() { timerCallback(); }   // one meter frame, without waiting for the timer (snapshot tool)
-    void showTab (int tab);                  // 0 = analysis, 1 + slot index = that module
 
-    static constexpr int kNumTabs = 1 + BigBossProcessor::kNumSlots;
+    void refreshNow() { tickAll (1.0f / 30.0f); }   // one meter frame, without waiting for the timer (snapshot tool)
+    void showAnalyser (bool on);
+
+    static constexpr int kModules = BigBossProcessor::kNumSlots;
+    static constexpr int designWidth = kit::rackWidth;
+    static constexpr int designHeight = kit::unitHeight * (kModules + 1);
 
 private:
-    void timerCallback() override;
-    void useSource (bool output);
-
-    struct Knob
-    {
-        juce::Slider slider { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::TextBoxBelow };
-        juce::Label label;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
-    };
-    void setupKnob (Knob&, const juce::String& paramId, const juce::String& text);
+    void timerCallback() override { tickAll (1.0f / 30.0f); }
+    void tickAll (float seconds);
+    void layoutModules();
+    void dragModule (int slot, int dy);
+    void dropModule (int slot);
 
     BigBossProcessor& proc;
-    bbui::Look look;
-    bbui::ChainStrip chain;
-    juce::TextButton analysisButton { "ANALYSIS" };
-    int tab = 0;
-
-    // analysis
-    bbui::MeterPanel meters;
-    bbui::Spectrum spectrum;
-    bbui::Goniometer gonio;
-    Knob inTrim, outTrim;
-    juce::Rectangle<int> knobArea;
-
-    // modules, by slot index
-    std::array<std::unique_ptr<bbui::rack::Unit>, BigBossProcessor::kNumSlots> units;
-    bbui::MeterStrip strip;
-
-    juce::TextButton inButton { "IN" }, outButton { "OUT" }, resetButton { "RESET" };
-    juce::ComboBox target;
-    bool showingOutput = true;
-    double shownRate = 0;
+    kit::LookAndFeel lookAndFeel;
+    juce::Component content;
+    std::array<std::unique_ptr<kit::Panel>, kModules> modules;   // by slot index
+    kit::OutputPanel output;
+    kit::AnalyserPanel analyser;
+    juce::TooltipWindow tooltips { this, 600 };
+    int draggingSlot = -1, dragRow = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BigBossEditor)
 };

@@ -2,19 +2,16 @@
 
 A mastering console as one VST3: detailed loudness and level metering, and a chain modelled on mastering hardware rather than on other plugins.
 
-The console opens on the **ANALYSIS** dashboard. The chain strip doubles as the tabs: click a module to show it as a rack unit, with a slim loudness and peak strip under it so levels stay in view, and click **ANALYSIS** to go back.
+The console is a rack, in the manner of the owner's Vocal Chain plugin: one 1U faceplate per module in chain order, and the **OUTPUT** unit with the volume fader at the bottom. Press **ANALYSER** on the output unit and a 5U analyser (loudness, true peak, spectrum, stereo field) takes the modules' place; press it again to go back.
 
-![Analysis dashboard](docs/screenshot.png)
+- **Drag a module by its name plate** to move it in the chain. The others close up around it.
+- **Click the lamp** at the left of a faceplate to bypass that module.
+- **Resize by dragging** the corner (or the host window's edge): the whole rack scales as one, from 50% to 200%, and keeps its shape. It opens at 80% (1024 × 566), which fits a 1080p screen at 125% display scaling.
+- **The fader** sets the output level, from off to +12 dB, with IN and OUT peak meters and short-term, integrated and true-peak readouts beside it. **INPUT TRIM** sits next to it (±24 dB) and acts before the chain.
 
-![Class-A EQ](docs/screenshot-eq.png)
+![The rack](docs/screenshot.png)
 
-![Tape machine](docs/screenshot-tape.png)
-
-![Compressor](docs/screenshot-comp.png)
-
-![De-esser](docs/screenshot-deess.png)
-
-![Limiter](docs/screenshot-limit.png)
+![The analyser](docs/screenshot-analyser.png)
 
 ## Plan
 
@@ -23,18 +20,19 @@ The console opens on the **ANALYSIS** dashboard. The chain strip doubles as the 
 | 1 | Foundation and metering: project, chain host, meters | done |
 | 2 | Elysia museq-style mastering parametric, filters, Studer A80 tape; rack tabs | done |
 | 3 | Shadow Hills-style mastering compressor; our own limiter, scored against FabFilter Pro-L 2 | done |
-| 4 | A new multiband de-esser; the full console UI | this version |
+| 4 | A new multiband de-esser; the full console UI | done |
+| 5 | The rack UI from Vocal Chain: 1U units, output fader, analyser unit, drag to resize | this version |
 
 None of the hardware has public schematics, so the models are voiced from published specs, manuals and measurements of the units. Each module's notes will say which.
 
 ## The chain
 
-Five slots: **Parametric EQ, Compressor, Tape, De-esser, Limiter**. Click a module to open its rack unit, drag it to reorder it, click its lamp (or the IN lamp on its rack unit) to bypass it. All five are built.
+Five slots: **Parametric EQ, Compressor, Tape, De-esser, Limiter**. Drag a module by its name plate to reorder it, click its lamp to bypass it. All five are built.
 
 - **Latency never changes.** It is the sum of every module's latency, whatever is bypassed or reordered, so the host's delay compensation stays put. A bypassed module's dry path is delayed by the same amount.
 - **Bypass is a 10 ms crossfade**, and bypassed modules keep running, so switching one back in is seamless.
 - **Reordering mutes for about 10 ms** (fade out, switch, let the old audio clear, fade in) rather than glitching.
-- **Input and Output trims** sit either side of the chain (±24 dB).
+- **Input trim** (±24 dB) sits before the chain and the **volume fader** (off to +12 dB) after it.
 - The host's own bypass delays the dry signal by the chain's latency, so A/B against the host bypass stays time-aligned.
 
 ## Class-A EQ
@@ -160,7 +158,7 @@ Linux needs: `libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxc
 - `bb_deesser_tests`: on a synthetic voice (a 180 Hz vowel with a band of noise for the "s"), the de-esser is bit-exact when idle in every mode, cuts a hot 6.4 kHz "s" by at least 4 dB in its own band and at least 3 dB less at 12.7 kHz, leaves the vowel within 0.1 dB, catches the same "s" 20 dB quieter within 1.5 dB, leaves a soft "s" alone, reports its true latency, and LISTEN is silent with nothing removed. At 44.1, 48 and 96 kHz.
 - `bb_fuzz [seconds]`: random rates, block sizes, extreme signals, bypass and order changes, and random EQ, compressor, tape, de-esser and limiter settings through the chain and both meter suites; fails on any non-finite value.
 - pluginval at strictness 10: `pluginval --strictness-level 10 --validate-in-process "build/BigBoss_artefacts/Release/VST3/Big Boss Mastering Console.vst3"` (on Linux, under `xvfb-run -a`).
-- `-DBB_BUILD_SNAPSHOT=ON` builds `bb_snapshot out.png [seconds]`, which runs a synthetic mix through the console and renders the dashboard and every module to PNGs (`out.png`, `out-eq.png`, `out-tape.png` and so on; the screenshots above).
+- `-DBB_BUILD_SNAPSHOT=ON` builds `bb_snapshot out.png [seconds]`, which runs a synthetic mix through the console and renders the rack and the analyser to PNGs (`out.png` and `out-analyser.png`; the screenshots above).
 
 GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand**: Actions → Build → Run workflow (Windows, or all platforms). It never runs on push or on pull requests.
 
@@ -175,7 +173,8 @@ GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand*
 | `src/dyn/` | `DualCompressor` and `Limiter`. No JUCE |
 | `src/deess/` | `DeEsser`. No JUCE |
 | `src/dsp/` | Shared with mingusdynasty/chocolatefudgeverb, copied at `6edfcdc` (namespace `cf`): tape heads and Jiles–Atherton hysteresis, Hot Sauce saturator, tube and transformer stages, half-band filters, level match. Keep changes in step with that repo. `Oversampler` is ours |
-| `src/plugin/` | JUCE processor and editor; `Params` (parameter ids and ranges); `ui/` holds the look, meter panel and strip, spectrum and goniometer, chain strip, and the rack (`Rack`, `RackControls`, `EqUnit`, `CompUnit`, `TapeUnit`, `DeEssUnit`, `LimitUnit`) |
+| `src/plugin/` | JUCE processor and editor; `Params` (parameter ids and ranges); `ui/` holds the analyser's look, meter panel, spectrum and goniometer; `rack/` holds the rack: `RackLookAndFeel`, `KnobRenderer` and `Widgets` (ported from mingusdynasty's Vocal Chain, namespace `kit`) and `Panels` (one faceplate per module, the output unit and the analyser unit) |
+| `resources/fonts/` | Barlow, under the SIL Open Font License (`OFL-barlow.txt`) |
 | `tests/`, `tools/snapshot/` | Engine tests, fuzzer, UI snapshot tool |
 
 Personal use. JUCE is AGPLv3 unless you hold a commercial licence.

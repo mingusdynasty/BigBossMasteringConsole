@@ -1,134 +1,44 @@
 #include "PluginEditor.h"
 
 #include "Params.h"
-#include "ui/CompUnit.h"
-#include "ui/DeEssUnit.h"
-#include "ui/EqUnit.h"
-#include "ui/LimitUnit.h"
-#include "ui/TapeUnit.h"
 
-using namespace bbui;
-
-
-BigBossEditor::BigBossEditor (BigBossProcessor& p) : AudioProcessorEditor (&p), proc (p)
+BigBossEditor::BigBossEditor (BigBossProcessor& p)
+    : AudioProcessorEditor (p), proc (p), output (p), analyser (p)
 {
-    for (int s = 0; s < BigBossProcessor::kNumSlots; ++s)
-        chain.slots.push_back ({ BigBossProcessor::kSlots[s].name,
-                                 proc.slotIsBuilt (s) ? juce::String ("in") : juce::String (BigBossProcessor::kSlots[s].comingIn),
-                                 proc.slotIsBuilt (s) });
-    chain.getOrder = [this]
-    {
-        const auto o = proc.getOrder();
-        return std::vector<int> (o.begin(), o.begin() + BigBossProcessor::kNumSlots);
-    };
-    chain.setOrder = [this] (const std::vector<int>& v)
-    {
-        bb::Chain::Order o {};
-        for (size_t k = 0; k < v.size(); ++k) o[k] = v[k];
-        proc.setOrder (o);
-        proc.updateHostDisplay (juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged (true));
-    };
-    chain.isBypassed = [this] (int s) { return proc.apvts.getRawParameterValue (BigBossProcessor::bypassId (s))->load() > 0.5f; };
-    chain.toggleBypass = [this] (int s)
-    {
-        if (auto* prm = proc.apvts.getParameter (BigBossProcessor::bypassId (s)))
-        {
-            prm->beginChangeGesture();
-            prm->setValueNotifyingHost (prm->getValue() > 0.5f ? 0.0f : 1.0f);
-            prm->endChangeGesture();
-        }
-    };
-    chain.onSelect = [this] (int s) { showTab (1 + s); };
-    addAndMakeVisible (chain);
+    setLookAndFeel (&lookAndFeel);
 
-    analysisButton.setClickingTogglesState (false);
-    analysisButton.onClick = [this] { showTab (0); };
-    addAndMakeVisible (analysisButton);
-
-    setupKnob (inTrim, pid::inTrim, "INPUT");
-    setupKnob (outTrim, pid::outTrim, "OUTPUT");
-
-    for (int s = 0; s < BigBossProcessor::kNumSlots; ++s)
+    for (int s = 0; s < kModules; ++s)
     {
         const juce::String id (BigBossProcessor::kSlots[s].id);
-        std::unique_ptr<rack::Unit> u;
-        if (id == "eq")
-            u = std::make_unique<rack::EqUnit> (proc.apvts, [this] { return proc.eqSettings(); });
-        else if (id == "tape")
-            u = std::make_unique<rack::TapeUnit> (proc.apvts, proc.tapeMachine(), [this] { return proc.tapeSettings(); });
-        else if (id == "comp")
-            u = std::make_unique<rack::CompUnit> (proc.apvts, proc.compressor());
-        else if (id == "deess")
-            u = std::make_unique<rack::DeEssUnit> (proc.apvts, proc.deesser(), [this] { return proc.deessSettings(); });
-        else if (id == "limit")
-            u = std::make_unique<rack::LimitUnit> (proc.apvts, proc.limiter(), [this] { return proc.limitSettings(); });
-        else
-        {
-            const juce::String titles[] = { "", "MASTERING COMPRESSOR", "", "MULTIBAND DE-ESSER", "MASTERING LIMITER" };
-            u = std::make_unique<rack::BlankUnit> (titles[s], BigBossProcessor::kSlots[s].comingIn);
-        }
-        if (proc.slotIsBuilt (s))
-        {
-            u->isIn = [this, s] { return ! chain.isBypassed (s); };
-            u->toggleIn = [this, s] { chain.toggleBypass (s); chain.repaint(); };
-        }
-        addChildComponent (*u);
-        units[(size_t) s] = std::move (u);
+        std::unique_ptr<kit::Panel> u;
+        if (id == "eq")         u = std::make_unique<kit::EqPanel> (p.apvts);
+        else if (id == "comp")  u = std::make_unique<kit::CompPanel> (p.apvts, p.compressor());
+        else if (id == "tape")  u = std::make_unique<kit::TapePanel> (p.apvts, p.tapeMachine());
+        else if (id == "deess") u = std::make_unique<kit::DeEssPanel> (p.apvts, p.deesser(), [&p] { return p.deessSettings().freq; });
+        else                    u = std::make_unique<kit::LimitPanel> (p.apvts, p.limiter(), [&p] { return p.limitSettings(); });
+        u->onDrag = [this, s] (int dy) { dragModule (s, dy); };
+        u->onDrop = [this, s] { dropModule (s); };
+        content.addAndMakeVisible (*u);
+        modules[(size_t) s] = std::move (u);
     }
-    addChildComponent (strip);
+    content.addAndMakeVisible (output);
+    content.addChildComponent (analyser);
+    output.analyserKey.onClick = [this] { showAnalyser (output.analyserKey.getToggleState()); };
 
-    for (auto* b : { &inButton, &outButton })
-    {
-        b->setClickingTogglesState (false);
-        addAndMakeVisible (*b);
-    }
-    inButton.onClick  = [this] { useSource (false); };
-    outButton.onClick = [this] { useSource (true); };
-    resetButton.onClick = [this] { proc.inMeters.requestReset(); proc.outMeters.requestReset(); };
-    resetButton.setTooltip ("Restart integrated loudness, LRA and the peak holds");
-    addAndMakeVisible (resetButton);
+    content.setSize (designWidth, designHeight);
+    addAndMakeVisible (content);
+    layoutModules();
+    showAnalyser (proc.editorAnalysis);
 
-    // reference line for the loudness bars and history; it changes nothing in the audio
-    const std::pair<const char*, float> targets[] = { { "-9 LUFS", -9 }, { "-11 LUFS", -11 }, { "-14 LUFS (streaming)", -14 },
-                                                      { "-16 LUFS", -16 }, { "-23 LUFS (EBU R128)", -23 } };
-    int id = 1;
-    for (auto& t : targets) target.addItem (t.first, id++);
-    target.setSelectedId (3, juce::dontSendNotification);
-    target.onChange = [this, targets]
-    {
-        const int i = target.getSelectedId() - 1;
-        if (i >= 0 && i < 5) meters.targetLufs = strip.targetLufs = targets[i].second;
-    };
-    addAndMakeVisible (target);
-
-    addAndMakeVisible (meters);
-    addAndMakeVisible (spectrum);
-    addAndMakeVisible (gonio);
-    useSource (true);
-
-    // last, so every child (the knobs' text boxes too) is rebuilt with the console's look; the rack
-    // units keep their own
-    setLookAndFeel (&look);
-    setSize (1180, 724);
-    showTab (proc.editorTab);
+    // resizable at a fixed aspect ratio, from half to twice the design size; the host's window
+    // follows (and can drag) the editor's size
+    setResizable (true, true);
+    setResizeLimits (designWidth / 2, designHeight / 2, designWidth * 2, designHeight * 2);
+    if (auto* c = getConstrainer())
+        c->setFixedAspectRatio ((double) designWidth / (double) designHeight);
+    setSize (designWidth * 4 / 5, designHeight * 4 / 5);   // fits a 1080p screen at 125% display scaling
+    tickAll (1.0f / 30.0f);
     startTimerHz (30);
-}
-
-void BigBossEditor::showTab (int t)
-{
-    tab = juce::jlimit (0, kNumTabs - 1, t);
-    proc.editorTab = tab;
-    analysisButton.setToggleState (tab == 0, juce::dontSendNotification);
-    const bool analysis = tab == 0;
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &meters, &spectrum, &gonio, &inTrim.slider, &inTrim.label,
-                                                                         &outTrim.slider, &outTrim.label })
-        c->setVisible (analysis);
-    for (int s = 0; s < BigBossProcessor::kNumSlots; ++s) units[(size_t) s]->setVisible (tab == 1 + s);
-    strip.setVisible (! analysis);
-    chain.selected = analysis ? -1 : tab - 1;
-    if (! analysis) units[(size_t) tab - 1]->tick();
-    chain.repaint();
-    repaint();
 }
 
 BigBossEditor::~BigBossEditor()
@@ -136,104 +46,114 @@ BigBossEditor::~BigBossEditor()
     setLookAndFeel (nullptr);
 }
 
-void BigBossEditor::setupKnob (Knob& k, const juce::String& paramId, const juce::String& text)
+void BigBossEditor::showAnalyser (bool on)
 {
-    k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 18);
-    k.slider.setDoubleClickReturnValue (true, proc.apvts.getParameter (paramId)->convertFrom0to1 (proc.apvts.getParameter (paramId)->getDefaultValue()));
-    k.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, paramId, k.slider);
-    k.label.setText (text, juce::dontSendNotification);
-    k.label.setFont (font (11.0f, true));
-    k.label.setColour (juce::Label::textColourId, col::dim);
-    k.label.setJustificationType (juce::Justification::centred);
-    addAndMakeVisible (k.slider);
-    addAndMakeVisible (k.label);
+    proc.editorAnalysis = on;
+    output.analyserKey.setToggleState (on, juce::dontSendNotification);
+    for (auto& m : modules) m->setVisible (! on);
+    analyser.setVisible (on);
+    repaint();
 }
 
-void BigBossEditor::useSource (bool output)
+void BigBossEditor::tickAll (float seconds)
 {
-    showingOutput = output;
-    auto* m = output ? &proc.outMeters : &proc.inMeters;
-    shownRate = proc.sampleRateHz.load();
-    meters.setSource (m);
-    strip.setSource (m, output ? "OUT" : "IN");
-    spectrum.setSource (m, shownRate);
-    gonio.setSource (m);
-    inButton.setToggleState (! output, juce::dontSendNotification);
-    outButton.setToggleState (output, juce::dontSendNotification);
+    analyser.tick (seconds);   // always, so the loudness history has no gap
+    output.tick (seconds);
+    // every module, shown or not, so meters and the limiter's history have no gap
+    for (auto& m : modules) m->tick (seconds);
 }
 
-void BigBossEditor::timerCallback()
+void BigBossEditor::layoutModules()
 {
-    if (std::abs (proc.sampleRateHz.load() - shownRate) > 0.5) useSource (showingOutput);
-    meters.tick();   // always, so the loudness history has no gap when the tab comes back
-    if (tab == 0)
+    const auto order = proc.getOrder();
+    for (int k = 0; k < kModules; ++k)
+        modules[(size_t) order[(size_t) k]]->setBounds (kit::earWidth, k * kit::unitHeight, kit::panelWidth, kit::unitHeight);
+    output.setBounds (kit::earWidth, kModules * kit::unitHeight, kit::panelWidth, kit::unitHeight);
+    analyser.setBounds (kit::earWidth, 0, kit::panelWidth, kModules * kit::unitHeight);
+}
+
+void BigBossEditor::dragModule (int slot, int dy)
+{
+    const auto order = proc.getOrder();
+    int from = 0;
+    while (from < kModules && order[(size_t) from] != slot) ++from;
+    const int y = juce::jlimit (0, (kModules - 1) * kit::unitHeight, from * kit::unitHeight + dy);
+    dragRow = juce::jlimit (0, kModules - 1, (y + kit::unitHeight / 2) / kit::unitHeight);
+    draggingSlot = slot;
+
+    // the others close up around where it would land
+    std::vector<int> rest;
+    for (int k = 0; k < kModules; ++k)
+        if (order[(size_t) k] != slot) rest.push_back (order[(size_t) k]);
+    rest.insert (rest.begin() + dragRow, slot);
+    for (int k = 0; k < kModules; ++k)
+        if (rest[(size_t) k] != slot)
+            modules[(size_t) rest[(size_t) k]]->setTopLeftPosition (kit::earWidth, k * kit::unitHeight);
+    modules[(size_t) slot]->setTopLeftPosition (kit::earWidth, y);
+    modules[(size_t) slot]->toFront (false);
+}
+
+void BigBossEditor::dropModule (int slot)
+{
+    if (draggingSlot == slot && dragRow >= 0)
     {
-        spectrum.tick();
-        gonio.tick();
+        auto order = proc.getOrder();
+        std::vector<int> rest;
+        for (int k = 0; k < kModules; ++k)
+            if (order[(size_t) k] != slot) rest.push_back (order[(size_t) k]);
+        rest.insert (rest.begin() + dragRow, slot);
+        for (int k = 0; k < kModules; ++k) order[(size_t) k] = rest[(size_t) k];
+        proc.setOrder (order);
     }
-    else strip.tick (meters.truePeakBar (0), meters.truePeakBar (1));
-    // every unit, shown or not, so meters and the limiter's history have no gap when a tab opens
-    for (auto& u : units) u->tick();
-    chain.repaint();
+    draggingSlot = dragRow = -1;
+    layoutModules();
 }
 
 void BigBossEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (col::bg);
-    auto header = getLocalBounds().removeFromTop (48).reduced (16, 0);
-    g.setColour (col::legend);
-    g.setFont (font (22.0f, true));
-    g.drawText ("BIG BOSS", header.removeFromLeft (124), juce::Justification::centredLeft);
-    g.setColour (col::amber);
-    g.setFont (font (13.0f));
-    g.drawText ("MASTERING CONSOLE", header.removeFromLeft (180), juce::Justification::centredLeft);
-    if (tab == 0)
+    const auto scale = (float) getWidth() / (float) designWidth;
+    g.addTransform (juce::AffineTransform::scale (scale));
+
+    // rack rails, with square cage-nut holes
+    g.fillAll (juce::Colour (0xff141414));
+    for (auto x : { 0, designWidth - kit::earWidth })
     {
-        g.setColour (col::panel);
-        g.fillRoundedRectangle (knobArea.toFloat(), 6.0f);
+        const auto ear = juce::Rectangle<float> ((float) x, 0.0f, (float) kit::earWidth, (float) designHeight);
+        const bool right = x > 0;
+        g.setGradientFill (juce::ColourGradient (juce::Colour (right ? 0xff1e1e20 : 0xff3a3a3c), ear.getX(), 0.0f,
+                                                 juce::Colour (right ? 0xff3a3a3c : 0xff1e1e20), ear.getRight(), 0.0f, false));
+        g.fillRect (ear);
+        g.setColour (juce::Colour (0xff0a0a0a));
+        for (int i = 0; i < 3 * (kModules + 1); ++i)
+        {
+            if (i % 3 == 1) continue;
+            const auto cy = (float) kit::unitHeight * ((float) i + 0.5f) / 3.0f;
+            g.fillRect (juce::Rectangle<float> (7.0f, 7.0f).withCentre ({ ear.getCentreX(), cy }));
+        }
     }
+
+    // each unit's ears, screwed to the rails (the analyser is one 5U unit)
+    auto ears = [&] (float top, float height)
+    {
+        for (auto x : { 0, designWidth - kit::earWidth })
+        {
+            const auto plate = juce::Rectangle<float> ((float) x + (x == 0 ? 3.0f : 0.0f), top + 2.0f, (float) kit::earWidth - 3.0f, height - 4.0f);
+            g.setColour (juce::Colour (0xff2c2c2e));
+            g.fillRoundedRectangle (plate, 2.0f);
+            for (auto fy : { 0.2f, 0.8f })
+                kit::drawScrew (g, { plate.getCentreX(), top + (height > (float) kit::unitHeight ? (fy < 0.5f ? 24.0f : height - 24.0f)
+                                                                                                  : fy * height) }, 7.0f);
+        }
+    };
+    if (analyser.isVisible()) ears (0.0f, (float) (kModules * kit::unitHeight));
+    else
+        for (int u = 0; u < kModules; ++u) ears ((float) (u * kit::unitHeight), (float) kit::unitHeight);
+    ears ((float) (kModules * kit::unitHeight), (float) kit::unitHeight);
 }
 
 void BigBossEditor::resized()
 {
-    auto r = getLocalBounds();
-    auto header = r.removeFromTop (48).reduced (16, 10);
-    resetButton.setBounds (header.removeFromRight (64));
-    header.removeFromRight (8);
-    target.setBounds (header.removeFromRight (170));
-    header.removeFromRight (8);
-    outButton.setBounds (header.removeFromRight (48));
-    header.removeFromRight (4);
-    inButton.setBounds (header.removeFromRight (48));
-
-    r.reduce (16, 0);
-    auto chainRow = r.removeFromTop (60);
-    analysisButton.setBounds (chainRow.removeFromLeft (120));
-    chainRow.removeFromLeft (18);
-    chain.setBounds (chainRow);
-    r.removeFromTop (12);
-    r.removeFromBottom (16);
-
-    // module tabs: the rack unit over the meter strip
-    auto rackArea = r;
-    strip.setBounds (rackArea.removeFromBottom (40));
-    rackArea.removeFromBottom (10);
-    for (auto& u : units) u->setBounds (rackArea);
-
-    // analysis
-    auto left = r.removeFromLeft (520);
-    meters.setBounds (left);
-    r.removeFromLeft (12);
-    auto lower = r.removeFromBottom (230);
-    spectrum.setBounds (r.withTrimmedBottom (12));
-    gonio.setBounds (lower.removeFromLeft (230));
-    lower.removeFromLeft (12);
-    knobArea = lower;
-    const int kw = lower.getWidth() / 2;
-    for (auto* k : { &inTrim, &outTrim })
-    {
-        auto a = lower.removeFromLeft (kw).reduced (6, 10);
-        k->label.setBounds (a.removeFromTop (16));
-        k->slider.setBounds (a);
-    }
+    const auto scale = (float) getWidth() / (float) designWidth;
+    content.setTransform (juce::AffineTransform::scale (scale));
+    content.setBounds (0, 0, designWidth, designHeight);
 }
