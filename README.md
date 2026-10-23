@@ -2,19 +2,19 @@
 
 A mastering console as one VST3: detailed loudness and level metering, and a chain modelled on mastering hardware rather than on other plugins.
 
-The console is a rack, in the manner of the owner's Vocal Chain plugin: the **BB-1** master section (presets and the assistant) on top, one 1U faceplate per module in chain order, and the **OUTPUT** unit with the volume fader at the bottom. Press **ANALYSER** (on BB-1 or on the output unit) and a 5U analyser (loudness, true peak, spectrum, spectrogram, stereo field) takes the modules' place; press it again to go back.
+The console is a rack, in the manner of the owner's Vocal Chain plugin: the half-height **Big Boss Mastering Suite** master section (presets, and keys for the assistant and the analyser) on top, one 1U faceplate per module in chain order, and the **OUTPUT** unit with the volume fader at the bottom. Press **ANALYSER** (on the master section or on the output unit) and a 5U analyser (loudness, true peak, spectrum, spectrogram, stereo field) takes the modules' place; press it again to go back.
 
 - **Drag a module by its name plate** to move it in the chain. The others close up around it.
 - **Click the lamp** at the left of a faceplate to bypass that module.
 - **Resize by dragging** the corner (or the host window's edge): the whole rack scales as one, from 50% to 200%, and keeps its shape. If a host gives the window a different shape, the rack shrinks to fit and is centred, so no unit is ever cut off. It opens at 75% (960 × 620), which fits a 1080p screen at 125% display scaling.
 - **The analyser's own keys**: **FREEZE** holds every display, **RESET** restarts integrated loudness, LRA, the peak holds and the spectrogram, and **BYPASS ALL** takes the whole console out (trim and fader too; the output is the untouched input, time-aligned) while the meters keep running, for a straight before-and-after. It fades over 10 ms, isn't saved with the session, and the output unit says ALL BYPASSED while it is on. **IN**/**OUT** pick what the analyser measures, and **TARGET** sets the reference line.
-- **The fader** sets the output level, from off to +12 dB, with IN and OUT peak meters and short-term, integrated and true-peak readouts beside it. **INPUT TRIM** sits next to it (±24 dB) and acts before the chain.
+- **The fader** sets the output level, from off to +12 dB, with IN and OUT peak meters and short-term, integrated and true-peak readouts beside it. **INPUT TRIM** sits next to it (±24 dB) and acts before the chain. **MONO** sums the output to mono after the fader (a 10 ms fade either way) to check how the master holds up on one speaker; it is a parameter, so it is saved and it affects a render: switch it off before you bounce.
 
 ## Presets and the assistant
 
 **Presets.** Ten factory presets (Init, Gentle Polish, Streaming Master, Loud & Punchy, Warm Tape Glue, Vocal Forward, Low End Control, Bright & Airy, Club Master, Transparent) and your own. Step through them with the arrows, or click the display or **BROWSE** for the list. **SAVE** stores every setting and the module order under a name you choose, as a `.bbpreset` file in your user app-data folder (`%APPDATA%\Big Boss Mastering Console\Presets` on Windows); the menu opens that folder. The factory presets are also the host's program list.
 
-**The assistant**, for when you don't know where to start. Pick a goal (**STREAM** −14 LUFS, **LOUD** −11, **CLUB** −9, **DYNAMIC** −16), play the loudest part of the mix and press **LISTEN**. It takes 10 seconds of audio (pauses don't count), then:
+**The assistant**, for when you don't know where to start. Press **ASSISTANT** on the master section and it drops down over the rack (**CLOSE** folds it away; it keeps listening or working, and a lamp by the key lights while it is busy or has a suggestion waiting). Pick a goal (**STREAM** −14 LUFS, **LOUD** −11, **CLUB** −9, **DYNAMIC** −16), play the loudest part of the mix and press **LISTEN**. It takes 10 seconds of audio (pauses don't count), then:
 
 - measures loudness, peak-to-loudness ratio, the tonal balance against a reference for mastered music (low end, low mids, mids, presence, air), how much the 5–10 kHz band dominates its loudest moments (sibilance), and how wide the bass is;
 - picks settings a mastering engineer might start from: half the EQ it would take to reach the reference (at most 3 dB, nothing under 0.75 dB), a 25 Hz high-pass and mono bass if the low end is wide, the darker or the cleaner tape, the de-esser only when "s" sounds stand out, and the compressor out if the mix is already dense;
@@ -23,6 +23,8 @@ The console is a rack, in the manner of the owner's Vocal Chain plugin: the **BB
 The display shows the result and every change with its reason. Nothing changes until **APPLY**, and **UNDO** puts back what you had.
 
 ![The rack](docs/screenshot.png)
+
+![The assistant, open](docs/screenshot-assistant.png)
 
 ![The analyser](docs/screenshot-analyser.png)
 
@@ -174,7 +176,7 @@ Linux needs: `libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxc
 - `bb_assist_tests`: on synthetic mixes, the assistant lands every goal within 0.5 LU with true peak under the ceiling, compresses by 0.5 to 3.5 dB, adds air to a dull mix, cuts a muddy one at 300 Hz, brings the de-esser in for a sibilant one and leaves it out otherwise, monos wide bass, and trims a mix that is already too loud.
 - `bb_fuzz [seconds]`: random rates, block sizes, extreme signals, bypass and order changes, and random EQ, compressor, tape, de-esser and limiter settings through the chain and both meter suites; fails on any non-finite value.
 - pluginval at strictness 10: `pluginval --strictness-level 10 --validate-in-process "build/BigBoss_artefacts/Release/VST3/Big Boss Mastering Console.vst3"` (on Linux, under `xvfb-run -a`).
-- `-DBB_BUILD_SNAPSHOT=ON` builds `bb_snapshot out.png [seconds]`, which runs a synthetic mix through the console and renders the rack, the analyser and the rack in an odd-shaped window to PNGs (`out.png`, `out-analyser.png` and `out-fit.png`; the first two are the screenshots above). It also builds `bb_plugin_tests` (run by ctest): **BYPASS ALL** passes the input bit-exact and time-aligned, switches in and out without a click, and the console comes back; the host's bypass is time-aligned from its first sample.
+- `-DBB_BUILD_SNAPSHOT=ON` builds `bb_snapshot out.png [seconds]`, which runs a synthetic mix through the console and renders the rack, the assistant open, the analyser and the rack in an odd-shaped window to PNGs (`out.png`, `out-assistant.png`, `out-analyser.png` and `out-fit.png`; the screenshots above). It also builds `bb_plugin_tests` (run by ctest): **BYPASS ALL** passes the input bit-exact and time-aligned, switches in and out without a click, and the console comes back; the host's bypass is time-aligned from its first sample; **MONO** makes both sides identical, switches without a click, and stereo comes back.
 
 GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand**: Actions → Build → Run workflow (Windows, or all platforms). It never runs on push or on pull requests.
 
@@ -190,8 +192,8 @@ GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand*
 | `src/dyn/` | `DualCompressor` and `Limiter`. No JUCE |
 | `src/deess/` | `DeEsser`. No JUCE |
 | `src/dsp/` | Shared with mingusdynasty/chocolatefudgeverb, copied at `6edfcdc` (namespace `cf`): the Jiles–Atherton tape hysteresis and half-band filters (the rest of that folder isn't used here, so it isn't copied). Keep changes in step with that repo. `Oversampler` is ours |
-| `src/plugin/` | JUCE processor and editor; `Params` (parameter ids and ranges); `Presets` (the factory set and the user folder); `ui/` holds the analyser's colours, meter panel, spectrum, spectrogram and goniometer; `rack/` holds the rack: `RackLookAndFeel`, `KnobRenderer` and `Widgets` (ported from mingusdynasty's Vocal Chain, namespace `kit`) and `Panels` (one faceplate per module, the master section, the output unit and the analyser unit) |
-| `resources/fonts/` | Barlow, under the SIL Open Font License (`OFL-barlow.txt`) |
+| `src/plugin/` | JUCE processor and editor; `Params` (parameter ids and ranges); `Presets` (the factory set and the user folder); `ui/` holds the analyser's colours, meter panel, spectrum, spectrogram and goniometer; `rack/` holds the rack: `RackLookAndFeel`, `KnobRenderer` and `Widgets` (ported from mingusdynasty's Vocal Chain, namespace `kit`) and `Panels` (one faceplate per module, the master section, the assistant pop-up, the output unit and the analyser unit) |
+| `resources/fonts/` | Barlow, under the SIL Open Font License (`OFL-barlow.txt`); Yellowtail (the name on the master section, by Astigmatic), under the Apache License 2.0 (`LICENSE-yellowtail.txt`) |
 | `tests/`, `tools/snapshot/` | Engine and plugin tests, fuzzer, UI snapshot tool |
 
 Personal use. JUCE is AGPLv3 unless you hold a commercial licence.

@@ -3,7 +3,7 @@
 #include "Params.h"
 
 BigBossEditor::BigBossEditor (BigBossProcessor& p)
-    : AudioProcessorEditor (p), proc (p), master (p), output (p), analyser (p)
+    : AudioProcessorEditor (p), proc (p), master (p), output (p), analyser (p), assistant (p)
 {
     setLookAndFeel (&lookAndFeel);
 
@@ -27,6 +27,11 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p)
     content.addChildComponent (analyser);
     output.analyserKey.onClick = [this] { showAnalyser (output.analyserKey.getToggleState()); };
     master.analyserKey.onClick = [this] { showAnalyser (master.analyserKey.getToggleState()); };
+    master.assistantKey.onClick = [this] { showAssistant (master.assistantKey.getToggleState()); };
+    master.assistantNews = [this] { return assistant.hasNews() && ! assistant.isVisible(); };
+    content.addChildComponent (assistant);
+    assistant.onOrderChanged = [this] { layoutModules(); };
+    assistant.onClose = [this] { showAssistant (false); };
 
     content.setSize (designWidth, designHeight);
     addAndMakeVisible (content);
@@ -59,8 +64,16 @@ void BigBossEditor::showAnalyser (bool on)
     repaint();
 }
 
+void BigBossEditor::showAssistant (bool on)
+{
+    master.assistantKey.setToggleState (on, juce::dontSendNotification);
+    assistant.setVisible (on);
+    if (on) assistant.toFront (false);
+}
+
 void BigBossEditor::tickAll (float seconds)
 {
+    assistant.tick (seconds);   // always: it keeps listening and working while folded away
     analyser.tick (seconds);   // always, so the loudness history has no gap
     master.tick (seconds);
     output.tick (seconds);
@@ -73,7 +86,8 @@ void BigBossEditor::layoutModules()
     const auto order = proc.getOrder();
     for (int k = 0; k < kModules; ++k)
         modules[(size_t) order[(size_t) k]]->setBounds (kit::earWidth, modulesTop + k * kit::unitHeight, kit::panelWidth, kit::unitHeight);
-    master.setBounds (kit::earWidth, 0, kit::panelWidth, kit::unitHeight);
+    master.setBounds (kit::earWidth, 0, kit::panelWidth, kit::masterHeight);
+    assistant.setBounds (kit::earWidth, modulesTop, kit::panelWidth, kit::unitHeight + kit::AssistantPanel::shadow);
     output.setBounds (kit::earWidth, modulesTop + kModules * kit::unitHeight, kit::panelWidth, kit::unitHeight);
     analyser.setBounds (kit::earWidth, modulesTop, kit::panelWidth, kModules * kit::unitHeight);
 }
@@ -97,6 +111,7 @@ void BigBossEditor::dragModule (int slot, int dy)
             modules[(size_t) rest[(size_t) k]]->setTopLeftPosition (kit::earWidth, modulesTop + k * kit::unitHeight);
     modules[(size_t) slot]->setTopLeftPosition (kit::earWidth, modulesTop + y);
     modules[(size_t) slot]->toFront (false);
+    if (assistant.isVisible()) assistant.toFront (false);
 }
 
 void BigBossEditor::dropModule (int slot)
@@ -143,7 +158,8 @@ void BigBossEditor::paint (juce::Graphics& g)
         for (int i = 0; i < 3 * (kModules + 2); ++i)
         {
             if (i % 3 == 1) continue;
-            const auto cy = (float) kit::unitHeight * ((float) i + 0.5f) / 3.0f;
+            const auto cy = (float) kit::unitHeight * ((float) i + 0.5f) / 3.0f - (float) (kit::unitHeight - kit::masterHeight);
+            if (cy < 0.0f || cy > (float) designHeight) continue;
             g.fillRect (juce::Rectangle<float> (7.0f, 7.0f).withCentre ({ ear.getCentreX(), cy }));
         }
     }
@@ -161,7 +177,7 @@ void BigBossEditor::paint (juce::Graphics& g)
                                                                                                   : fy * height) }, 7.0f);
         }
     };
-    ears (0.0f, (float) kit::unitHeight);
+    ears (0.0f, (float) kit::masterHeight);
     if (analyser.isVisible()) ears ((float) modulesTop, (float) (kModules * kit::unitHeight));
     else
         for (int u = 0; u < kModules; ++u) ears ((float) (modulesTop + u * kit::unitHeight), (float) kit::unitHeight);

@@ -1,8 +1,8 @@
 // Renders the console to PNGs after running a synthetic mix through it, so the UI can be checked
 // without a host. Usage: bb_snapshot out.png [seconds]
-// Writes out.png (the rack, with the assistant's suggestion for the mix), out-analyser.png (the
-// analyser in place of the modules) and out-fit.png (the rack in a window of another shape), with
-// demo settings so the panels have something to show.
+// Writes out.png (the rack), out-assistant.png (the assistant open, with its suggestion for the mix),
+// out-analyser.png (the analyser in place of the modules) and out-fit.png (the rack in a window of
+// another shape), with demo settings so the panels have something to show.
 #include "plugin/PluginEditor.h"
 #include "plugin/PluginProcessor.h"
 
@@ -64,8 +64,8 @@ int main (int argc, char** argv)
         if ((done / block) % 50 == 0) editor->refreshNow();
     }
     // the assistant listens to the mix and makes its suggestion, shown on the master section
-    editor->masterSection().pressListen();
-    for (int f = 0; f < 2000 && editor->masterSection().busy(); ++f)
+    editor->assistantSection().pressListen();
+    for (int f = 0; f < 2000 && editor->assistantSection().busy(); ++f)
     {
         for (int k = 0; k < 3; ++k) nextBlock();
         editor->refreshNow();
@@ -74,16 +74,18 @@ int main (int argc, char** argv)
 
     // the rack at its design size, then the analyser in place of the modules
     ed->setSize (BigBossEditor::designWidth, BigBossEditor::designHeight);
-    for (int view = 0; view < 2; ++view)
+    const char* suffix[] = { "", "-assistant", "-analyser" };
+    for (int view = 0; view < 3; ++view)
     {
-        editor->showAnalyser (view == 1);
+        editor->showAssistant (view == 1);
+        editor->showAnalyser (view == 2);
         // a second of frames so the needles settle; for the analyser, enough to fill the spectrogram
-        for (int f = 0; f < (view == 1 ? 400 : 30); ++f)
+        for (int f = 0; f < (view == 2 ? 400 : 30); ++f)
         {
             for (int k = 0; k < 3; ++k) nextBlock();
             editor->refreshNow();
         }
-        const auto file = view == 0 ? out : out.getSiblingFile (out.getFileNameWithoutExtension() + "-analyser.png");
+        const auto file = view == 0 ? out : out.getSiblingFile (out.getFileNameWithoutExtension() + suffix[view] + ".png");
         const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
         file.deleteFile();
         juce::FileOutputStream os (file);

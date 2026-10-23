@@ -7,7 +7,7 @@
 
 namespace pid
 {
-inline const juce::String inTrim = "in_trim", volume = "volume";
+inline const juce::String inTrim = "in_trim", volume = "volume", outMono = "out_mono";
 inline constexpr float volumeMinDb = -60.0f;   // the fader's bottom: off
 
 inline juce::String bypass (const char* slotId) { return juce::String (slotId) + "_bypass"; }

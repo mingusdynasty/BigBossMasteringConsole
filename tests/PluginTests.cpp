@@ -103,6 +103,37 @@ int main()
         CHECK (off < 1e-6, "the host's bypass is the input delayed by the latency, with no stale stretch (off by %g)", off);
     }
 
+    // the output's MONO: both sides identical once it is in, switched without a click, stereo again after
+    {
+        auto p = make();
+        auto* mono = p->apvts.getParameter ("out_mono");
+        std::vector<float> l, r;
+        juce::AudioBuffer<float> buf (2, kBlock);
+        juce::MidiBuffer midi;
+        for (int k = 0; k < 120; ++k)
+        {
+            if (k == 40) mono->setValueNotifyingHost (1.0f);
+            if (k == 80) mono->setValueNotifyingHost (0.0f);
+            for (int i = 0; i < kBlock; ++i)
+            {
+                const int n = k * kBlock + i;
+                buf.setSample (0, i, input (n));
+                buf.setSample (1, i, 0.3f * (float) std::sin (2 * kPi * 330.0 * n / kSr));   // a different right side
+            }
+            p->processBlock (buf, midi);
+            l.insert (l.end(), buf.getReadPointer (0), buf.getReadPointer (0) + kBlock);
+            r.insert (r.end(), buf.getReadPointer (1), buf.getReadPointer (1) + kBlock);
+        }
+        double side = 0, sideAfter = 0;
+        for (int i = 42 * kBlock; i < 80 * kBlock; ++i) side = juce::jmax (side, (double) std::abs (l[(size_t) i] - r[(size_t) i]));
+        for (int i = 100 * kBlock; i < 120 * kBlock; ++i) sideAfter = juce::jmax (sideAfter, (double) std::abs (l[(size_t) i] - r[(size_t) i]));
+        CHECK (side < 1e-6, "MONO makes both sides the same (differ by %g)", side);
+        CHECK (sideAfter > 0.05, "stereo comes back after MONO (sides differ by %g)", sideAfter);
+        const double natural = juce::jmax (maxD4 (l, 20 * kBlock, 40 * kBlock), maxD4 (l, 60 * kBlock, 80 * kBlock));
+        const double across = juce::jmax (maxD4 (l, 39 * kBlock, 44 * kBlock), maxD4 (l, 79 * kBlock, 84 * kBlock));
+        CHECK (across < natural * 2, "MONO switches without a click (4th difference %g, the signal's own %g)", across, natural);
+    }
+
     std::printf ("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

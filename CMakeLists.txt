@@ -75,11 +75,12 @@ if(BB_BUILD_PLUGIN)
         VST3_CATEGORIES           Fx Mastering Analyzer
         DESCRIPTION               "Mastering console: metering and a hardware-modelled chain")
 
-    # rack panel fonts (Barlow, SIL Open Font License, see resources/fonts)
+    # rack panel fonts (Barlow, SIL Open Font License; Yellowtail for the name, Apache 2.0; see resources/fonts)
     juce_add_binary_data(BigBossFonts HEADER_NAME BigBossFonts.h NAMESPACE BigBossFonts SOURCES
         resources/fonts/Barlow-SemiBold.ttf
         resources/fonts/Barlow-Bold.ttf
-        resources/fonts/BarlowCondensed-Bold.ttf)
+        resources/fonts/BarlowCondensed-Bold.ttf
+        resources/fonts/Yellowtail-Regular.ttf)
 
     set(BB_PLUGIN_SOURCES
         src/plugin/PluginProcessor.cpp

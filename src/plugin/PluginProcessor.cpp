@@ -79,6 +79,7 @@ BigBossProcessor::BigBossProcessor()
     }
     pInTrim  = apvts.getRawParameterValue (pid::inTrim);
     pVolume  = apvts.getRawParameterValue (pid::volume);
+    pOutMono = apvts.getRawParameterValue (pid::outMono);
 
     auto raw = [this] (const juce::String& pidStr) { return apvts.getRawParameterValue (pidStr); };
     for (int b = 0; b < bb::eq::kBands; ++b)
@@ -209,6 +210,7 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     for (auto& l : bypassLine) l.assign ((size_t) len, 0.0);
     bypassPos = 0;
     dryMix = bypassAll.load() ? 1.0 : 0.0;
+    monoMix = pOutMono->load() > 0.5f ? 1.0 : 0.0;
     inGain  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
     outGain = volumeGain (pVolume->load());
 
@@ -276,6 +278,21 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
 
         for (int i = 0; i < k; ++i) { outGain += go; l[i] *= outGain; r[i] *= outGain; }
         outGain = outTarget;
+
+        // MONO: the output summed to mono, faded in and out
+        const bool mono = pOutMono->load (std::memory_order_relaxed) > 0.5f;
+        if (mono || monoMix > 0.0)
+        {
+            const double step = 1.0 / (kBypassFade * sampleRateHz.load (std::memory_order_relaxed));
+            for (int i = 0; i < k; ++i)
+            {
+                monoMix = mono ? juce::jmin (1.0, monoMix + step) : juce::jmax (0.0, monoMix - step);
+                const double g = 0.5 - 0.5 * std::cos (monoMix * juce::MathConstants<double>::pi);
+                const double m = 0.5 * (l[i] + r[i]);
+                l[i] += g * (m - l[i]);
+                r[i] += g * (m - r[i]);
+            }
+        }
 
         // BYPASS ALL: an equal-gain raised-cosine crossfade to the delayed dry signal (the two are
         // time-aligned, so nothing combs while it moves)

@@ -116,6 +116,8 @@ private:
     std::array<std::atomic<float>*, kNumSlots> pBypass {};
     std::atomic<float>* pInTrim = nullptr;
     std::atomic<float>* pVolume = nullptr;
+    std::atomic<float>* pOutMono = nullptr;
+    double monoMix = 0;   // 0 = stereo, 1 = summed to mono; ramps over kBypassFade
     std::array<std::atomic<float>, 2> inPeak {}, outPeak {};
     int currentFactory = 0;
 
