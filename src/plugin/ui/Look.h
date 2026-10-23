@@ -1,4 +1,4 @@
-// The console's look: dark anodised panel, cream legends, amber for live values.
+// The analyser screen's look: dark panels, cream legends, amber for live values.
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -30,14 +30,4 @@ void drawTabular (juce::Graphics&, const juce::String& text, juce::Rectangle<flo
 
 // map a value in dB onto 0..1 of a meter scale
 inline float norm (float v, float lo, float hi) { return juce::jlimit (0.0f, 1.0f, (v - lo) / (hi - lo)); }
-
-class Look final : public juce::LookAndFeel_V4
-{
-public:
-    Look();
-    void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos, float start, float end, juce::Slider&) override;
-    juce::Label* createSliderTextBox (juce::Slider&) override;
-    void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool over, bool down) override;
-    juce::Font getTextButtonFont (juce::TextButton&, int) override { return font (12.0f, true); }
-};
 } // namespace bbui

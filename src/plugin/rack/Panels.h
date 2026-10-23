@@ -12,9 +12,15 @@
 #include "plugin/ui/Spectrum.h"
 #include "tape/TapeMachine.h"
 
+#include "assist/Assistant.h"
+#include "chain/Chain.h"
+#include "plugin/Presets.h"
+
 #include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <vector>
 
 class BigBossProcessor;
@@ -203,6 +209,82 @@ private:
     float lastReduction = 0.0f;
 };
 
+// ------------------------------------------------------------------- master section
+
+inline constexpr int masterHeight = unitHeight / 2;   // BB-1 is a half-height unit
+
+// the top unit: presets (factory and the user's own), and the keys that open the assistant and the
+// analyser
+class MasterPanel final : public Panel, public juce::TooltipClient
+{
+public:
+    explicit MasterPanel (BigBossProcessor&);
+    juce::String getTooltip() override;   // over the preset display: what the preset does
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick (float seconds) override;
+
+    std::function<void()> onOrderChanged;     // a preset moved the modules
+    std::function<bool()> assistantNews;      // lights the lamp by ASSISTANT
+    juce::ToggleButton assistantKey { "ASSISTANT" };
+    juce::ToggleButton analyserKey { "ANALYSER" };   // the same switch as the output unit's
+
+private:
+    void showPresetMenu();
+    void stepPreset (int delta);
+    void savePreset();
+
+    BigBossProcessor& proc;
+    juce::ToggleButton prev { "<" }, next { ">" }, save { "SAVE" }, browse { "BROWSE" };
+    juce::Rectangle<int> presetLcd;
+    juce::String shownPreset;
+    bool shownLamp = false;
+    std::unique_ptr<juce::AlertWindow> saveDialog;
+
+    void mouseUp (const juce::MouseEvent&) override;
+};
+
+// the assistant, which listens to the mix and sets the console up for a loudness goal: a 1U panel that
+// drops down over the rack from BB-1's ASSISTANT key, and keeps working while it is folded away
+class AssistantPanel final : public Panel
+{
+public:
+    explicit AssistantPanel (BigBossProcessor&);
+    ~AssistantPanel() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void tick (float seconds) override;
+
+    static constexpr int shadow = 10;   // drawn below the faceplate, over the rack
+    std::function<void()> onOrderChanged;   // undo moved the modules
+    std::function<void()> onClose;
+    bool hasNews() const { return state == State::Listening || state == State::Thinking || state == State::Ready; }
+
+    // for the snapshot tool
+    void pressListen() { listen(); }
+    bool busy() const { return state == State::Listening || state == State::Thinking; }
+
+private:
+    void listen();
+    void apply();
+    void undo();
+
+    BigBossProcessor& proc;
+    juce::ToggleButton listenKey { "LISTEN" }, applyKey { "APPLY" }, undoKey { "UNDO" }, closeKey { "CLOSE" };
+    std::array<juce::ToggleButton, 4> goalKeys;
+    juce::Rectangle<int> statusLcd;
+
+    enum class State { Idle, Listening, Thinking, Ready, Applied, Failed } state = State::Idle, shownState = State::Idle;
+    bb::assist::Goal goal = bb::assist::Goal::Streaming;
+    std::thread worker;
+    std::atomic<bool> cancel { false }, workerDone { false };
+    std::unique_ptr<bb::assist::Plan> plan;
+    presets::Values before;   // for UNDO
+    juce::String beforePreset;
+    bb::Chain::Order beforeOrder {};
+    float thinkingFor = 0;
+};
+
 // ------------------------------------------------------------------- output and analyser
 
 class OutputPanel final : public Panel
@@ -220,9 +302,11 @@ private:
     juce::Slider fader { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
     Apvts::SliderAttachment faderAttachment;
     Knob* trim;
+    Switch* mono;
     PeakMeter inMeter, outMeter;
     juce::Label readout;
     float shortTerm = -200, integrated = -200, truePeak = -200;
+    bool shownBypass = false;
 };
 
 class AnalyserPanel final : public Panel
@@ -231,20 +315,24 @@ public:
     explicit AnalyserPanel (BigBossProcessor&);
     void paint (juce::Graphics&) override;
     void resized() override;
-    void tick (float seconds) override;   // the loudness history runs whether or not the analyser shows
+    void tick (float seconds) override;   // the loudness history runs whether or not the analyser shows (unless frozen)
     void refreshSource();                 // after a sample-rate change
 
 private:
     void useSource (bool output);
 
+    void reset();
+
     BigBossProcessor& proc;
     bbui::MeterPanel meters;
     bbui::Spectrum spectrum;
+    bbui::Spectrogram spectrogram;
     bbui::Goniometer gonio;
-    juce::ToggleButton inKey { "IN" }, outKey { "OUT" }, resetKey { "RESET" };
+    juce::ToggleButton freezeKey { "FREEZE" }, resetKey { "RESET" }, bypassKey { "BYPASS ALL" };
+    juce::ToggleButton inKey { "IN" }, outKey { "OUT" };
     juce::ComboBox target;
-    bool showingOutput = true;
+    bool showingOutput = true, frozen = false, shownBypass = false;
     double shownRate = 0;
-    juce::Rectangle<int> screen, controls;
+    juce::Rectangle<int> screen;
 };
 } // namespace kit

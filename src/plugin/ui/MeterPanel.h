@@ -16,7 +16,6 @@ public:
     void paint (juce::Graphics&) override;
 
     float targetLufs = -14.0f;             // reference line on the bars and the history
-    float truePeakBar (int ch) const { return tpBar[ch]; }   // this panel takes the block peaks, so it shares its bars
 
 private:
     void paintReadout (juce::Graphics&, juce::Rectangle<int> r, const juce::String& label, const juce::String& value,

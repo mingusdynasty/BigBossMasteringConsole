@@ -1,7 +1,8 @@
 // Renders the console to PNGs after running a synthetic mix through it, so the UI can be checked
 // without a host. Usage: bb_snapshot out.png [seconds]
-// Writes out.png (the rack) and out-analyser.png (the analyser in place of the modules), with demo
-// settings so the panels have something to show.
+// Writes out.png (the rack), out-assistant.png (the assistant open, with its suggestion for the mix),
+// out-analyser.png (the analyser in place of the modules) and out-fit.png (the rack in a window of
+// another shape), with demo settings so the panels have something to show.
 #include "plugin/PluginEditor.h"
 #include "plugin/PluginProcessor.h"
 
@@ -62,17 +63,29 @@ int main (int argc, char** argv)
         nextBlock();
         if ((done / block) % 50 == 0) editor->refreshNow();
     }
+    // the assistant listens to the mix and makes its suggestion, shown on the master section
+    editor->assistantSection().pressListen();
+    for (int f = 0; f < 2000 && editor->assistantSection().busy(); ++f)
+    {
+        for (int k = 0; k < 3; ++k) nextBlock();
+        editor->refreshNow();
+        if (! proc.isCapturing()) juce::Thread::sleep (20);
+    }
+
     // the rack at its design size, then the analyser in place of the modules
     ed->setSize (BigBossEditor::designWidth, BigBossEditor::designHeight);
-    for (int view = 0; view < 2; ++view)
+    const char* suffix[] = { "", "-assistant", "-analyser" };
+    for (int view = 0; view < 3; ++view)
     {
-        editor->showAnalyser (view == 1);
-        for (int f = 0; f < 30; ++f)   // a second of frames, so the needles settle
+        editor->showAssistant (view == 1);
+        editor->showAnalyser (view == 2);
+        // a second of frames so the needles settle; for the analyser, enough to fill the spectrogram
+        for (int f = 0; f < (view == 2 ? 400 : 30); ++f)
         {
             for (int k = 0; k < 3; ++k) nextBlock();
             editor->refreshNow();
         }
-        const auto file = view == 0 ? out : out.getSiblingFile (out.getFileNameWithoutExtension() + "-analyser.png");
+        const auto file = view == 0 ? out : out.getSiblingFile (out.getFileNameWithoutExtension() + suffix[view] + ".png");
         const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
         file.deleteFile();
         juce::FileOutputStream os (file);
@@ -80,6 +93,15 @@ int main (int argc, char** argv)
         if (! os.openedOk() || ! png.writeImageToStream (img, os)) { std::printf ("could not write %s\n", file.getFullPathName().toRawUTF8()); return 1; }
         std::printf ("wrote %s\n", file.getFullPathName().toRawUTF8());
     }
+    // a window the host has made taller than the rack: the rack fits and is centred, nothing is cut off
+    ed->setSize (BigBossEditor::designWidth * 3 / 4, BigBossEditor::designHeight);
+    const auto fit = out.getSiblingFile (out.getFileNameWithoutExtension() + "-fit.png");
+    const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+    fit.deleteFile();
+    juce::FileOutputStream os (fit);
+    juce::PNGImageFormat png;
+    if (! os.openedOk() || ! png.writeImageToStream (img, os)) { std::printf ("could not write %s\n", fit.getFullPathName().toRawUTF8()); return 1; }
+    std::printf ("wrote %s\n", fit.getFullPathName().toRawUTF8());
     ed.reset();
     return 0;
 }

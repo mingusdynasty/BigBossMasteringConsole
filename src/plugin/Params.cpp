@@ -47,6 +47,8 @@ void addLayout (juce::AudioProcessorValueTreeState::ParameterLayout& layout, con
         P { volume, 1 }, "Volume", juce::NormalisableRange<float> (volumeMinDb, 12.0f, 0.1f, 2.5f), 0.0f,
         juce::AudioParameterFloatAttributes().withLabel ("dB").withStringFromValueFunction ([] (float v, int)
         { return v <= volumeMinDb ? juce::String ("-inf") : (v > 0.05f ? "+" : "") + juce::String (v, 1); })));
+    // sums the output to mono after the fader, to check how the master holds up on one speaker
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { outMono, 1 }, "Output Mono", false));
     for (int s = 0; s < numSlots; ++s)
         layout.add (std::make_unique<juce::AudioParameterBool> (P { bypass (slotIds[s]), 1 }, juce::String (slotNames[s]) + " Bypass", false));
 

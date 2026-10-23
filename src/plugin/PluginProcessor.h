@@ -9,7 +9,9 @@
 #include "chain/EqModule.h"
 #include "chain/LimitModule.h"
 #include "chain/TapeModule.h"
+#include "assist/Assistant.h"
 #include "meter/MeterSuite.h"
+#include "Presets.h"
 
 class BigBossProcessor final : public juce::AudioProcessor
 {
@@ -37,17 +39,18 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
+    // the host's program list is the factory presets
+    int getNumPrograms() override { return (int) presets::factory().size(); }
+    int getCurrentProgram() override { return juce::jmax (0, currentFactory); }
+    void setCurrentProgram (int i) override { loadFactoryPreset (i); }
+    const juce::String getProgramName (int i) override;
     void changeProgramName (int, const juce::String&) override {}
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     // the console's slots, in their default order; ids are used in parameter ids and saved state
-    struct SlotInfo { const char* id; const char* name; const char* comingIn; };
+    struct SlotInfo { const char* id; const char* name; };
     static constexpr int kNumSlots = 5;
     static const SlotInfo kSlots[kNumSlots];
 
@@ -56,7 +59,6 @@ public:
     // chain order, from the editor (message thread); saved with the session
     bb::Chain::Order getOrder() const { return chain.order(); }
     void setOrder (const bb::Chain::Order& o);
-    bool slotIsBuilt (int slot) const { return std::strlen (kSlots[slot].comingIn) == 0; }
 
     // the modules' settings as the parameters stand now; safe from any thread
     bb::eq::Settings eqSettings() const;
@@ -73,9 +75,33 @@ public:
     bb::MeterSuite inMeters, outMeters;
     std::atomic<double> sampleRateHz { 48000.0 };
     bool editorAnalysis = false;   // the editor last showed the analyser in place of the modules
+    // the analyser's BYPASS ALL: the output is the input, untouched and delayed by the chain's latency,
+    // while the chain keeps running and both meters keep measuring. Not saved, so a session never
+    // opens bypassed.
+    std::atomic<bool> bypassAll { false };
 
     // sample peak (dBFS) per channel since the last call, before the input trim or after the fader; for the meters
     float takePeakDb (bool output, int ch);
+
+    // presets (message thread). Loading one sets every parameter (and, for a user preset, the order),
+    // telling the host about each change.
+    void loadFactoryPreset (int index);
+    bool loadUserPreset (const juce::File&);
+    bool saveUserPreset (const juce::String& name);   // false if the file couldn't be written
+    juce::String presetName { "Init" };                // shown on the preset display; saved with the session
+    presets::Values currentValues() const;             // every parameter's plain value
+    void applyValues (const presets::Values&, bool othersToDefault);
+
+    // the assistant: capture a stretch of the input (before the trim, skipping near-silence), then
+    // apply a plan made from it
+    static constexpr double kCaptureSeconds = 10.0;
+    void startCapture();
+    void cancelCapture() { capturing.store (false); }
+    bool isCapturing() const { return capturing.load (std::memory_order_acquire); }
+    float captureProgress() const;   // 0 .. 1
+    bool takeCapture (std::vector<float>& l, std::vector<float>& r, double& sampleRate);   // once full
+    bb::assist::Order assistOrder() const;
+    void applyPlan (const bb::assist::Plan&);
 
 private:
     template <typename T> void processImpl (juce::AudioBuffer<T>& buffer);
@@ -90,7 +116,16 @@ private:
     std::array<std::atomic<float>*, kNumSlots> pBypass {};
     std::atomic<float>* pInTrim = nullptr;
     std::atomic<float>* pVolume = nullptr;
+    std::atomic<float>* pOutMono = nullptr;
+    double monoMix = 0;   // 0 = stereo, 1 = summed to mono; ramps over kBypassFade
     std::array<std::atomic<float>, 2> inPeak {}, outPeak {};
+    int currentFactory = 0;
+
+    std::array<std::vector<float>, 2> capture;
+    std::atomic<int> capturePos { 0 };
+    std::atomic<bool> capturing { false }, captureFull { false };
+    void captureBlock (const double* l, const double* r, int n);
+    void setOrderFromIds (const juce::String& commaSeparated);
 
     struct EqParams
     {
@@ -121,8 +156,14 @@ private:
     double inGain = 1, outGain = 1;
     int latency = 0;
 
+    // the dry signal, delayed by the chain's latency: for the host's bypass and for BYPASS ALL. Fed on
+    // every block, so either can switch in without a stale stretch
     std::array<std::vector<double>, 2> bypassLine;
     int bypassPos = 0, bypassMask = 0;
+    std::vector<double> dryL, dryR;
+    static constexpr double kBypassFade = 0.010;   // seconds
+    double dryMix = 0;   // 0 = the console, 1 = bypassed; ramps over kBypassFade
+    void delayDry (const double* l, const double* r, double* outL, double* outR, int n);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BigBossProcessor)
 };
