@@ -35,7 +35,7 @@ std::vector<Factory> build()
                            { bypass ("deess"), 1.0f }, { limDrive, 4.0f }, { limCeiling, -1.0f } },
                          [] (Values& v) { band (v, 4, 12000, 1.5f, true); }) });
 
-    f.push_back ({ "Streaming Master", "Balanced for streaming services: around -14 LUFS, -1 dBTP",
+    f.push_back ({ "Streaming Master", "Balanced for streaming services, at -1 dBTP; the assistant lands it on -14 LUFS",
                    make ({ { eqHpf, 25.0f }, { compOptoThr, -20.0f }, { compOptoGain, 1.5f }, { compVcaThr, -12.0f }, { compRatio, 1.0f }, { compAttack, 4.0f },
                            { tapeSpeed, 1.0f }, { tapeType, 1.0f }, { tapeWow, 10.0f }, { deessThr, -6.0f }, { limDrive, 7.0f }, { limCeiling, -1.0f } },
                          [] (Values& v) { band (v, 1, 300, -1.0f); band (v, 4, 12000, 1.5f, true); }) });
@@ -61,7 +61,7 @@ std::vector<Factory> build()
                    make ({ { tapeSpeed, 1.0f }, { tapeType, 1.0f }, { deessThr, -8.0f }, { deessRange, 6.0f }, { deessFreq, 5500.0f }, { limDrive, 5.0f } },
                          [] (Values& v) { band (v, 3, 4500, 1.0f); band (v, 4, 12000, 3.0f, true); }) });
 
-    f.push_back ({ "Club Master", "For big systems: mono lows, dense limiting near -8 LUFS",
+    f.push_back ({ "Club Master", "For big systems: mono lows and dense limiting",
                    make ({ { eqHpf, 28.0f }, { eqMono, 150.0f }, { compOptoThr, -22.0f }, { compOptoGain, 2.0f }, { compVcaThr, -16.0f }, { compRatio, 2.0f },
                            { compVcaGain, 3.0f }, { tapeSpeed, 0.0f }, { tapeType, 0.0f }, { tapeIn, 3.0f }, { limDrive, 14.0f }, { limStyle, 2.0f },
                            { limCeiling, -0.3f } },
@@ -70,6 +70,22 @@ std::vector<Factory> build()
     f.push_back ({ "Transparent", "Acoustic, jazz and classical: compressor, tape and de-esser out, light limiting",
                    make ({ { bypass ("comp"), 1.0f }, { bypass ("tape"), 1.0f }, { bypass ("deess"), 1.0f }, { eqHpf, 20.0f }, { limDrive, 2.0f },
                            { limCeiling, -1.0f } }) });
+
+    const std::pair<const char*, const char*> tags[] = {
+        { "Init", "neutral" },
+        { "Gentle Polish", "gentle, streaming, acoustic" },
+        { "Streaming Master", "streaming, balanced" },
+        { "Loud & Punchy", "loud, punchy, rock, hip-hop" },
+        { "Warm Tape Glue", "warm, tape, glue" },
+        { "Vocal Forward", "vocal, pop, de-ess" },
+        { "Low End Control", "bass, tight, electronic" },
+        { "Bright & Airy", "bright, air, pop" },
+        { "Club Master", "loud, club, electronic" },
+        { "Transparent", "neutral, clean, dynamic, acoustic" },
+    };
+    for (auto& p : f)
+        for (const auto& [name, list] : tags)
+            if (juce::String (p.name) == name) { p.tags = juce::StringArray::fromTokens (list, ",", ""); p.tags.trim(); }
     return f;
 }
 } // namespace
@@ -85,6 +101,41 @@ juce::File userFolder()
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
         .getChildFile ("Big Boss Mastering Console")
         .getChildFile ("Presets");
+}
+
+juce::StringArray tagsOf (const juce::File& file)
+{
+    juce::StringArray t;
+    if (auto xml = juce::XmlDocument::parse (file))
+    {
+        t = juce::StringArray::fromTokens (xml->getStringAttribute ("tags"), ",", "");
+        t.trim();
+        t.removeEmptyStrings();
+    }
+    return t;
+}
+
+std::vector<Entry> all()
+{
+    std::vector<Entry> out;
+    const auto& f = factory();
+    for (int i = 0; i < (int) f.size(); ++i) out.push_back ({ f[(size_t) i].name, f[(size_t) i].blurb, f[(size_t) i].tags, i, {} });
+    for (const auto& file : userPresets()) out.push_back ({ file.getFileNameWithoutExtension(), {}, tagsOf (file), -1, file });
+    return out;
+}
+
+bool matches (const Entry& e, const juce::String& search, const juce::String& tag)
+{
+    if (tag.isNotEmpty() && ! e.tags.contains (tag, true)) return false;
+    if (search.trim().isEmpty()) return true;
+    for (const auto& word : juce::StringArray::fromTokens (search, " ", ""))
+    {
+        if (word.isEmpty()) continue;
+        bool found = e.name.containsIgnoreCase (word);
+        for (const auto& t : e.tags) found = found || t.containsIgnoreCase (word);
+        if (! found) return false;
+    }
+    return true;
 }
 
 juce::Array<juce::File> userPresets()

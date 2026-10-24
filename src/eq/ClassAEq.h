@@ -57,6 +57,7 @@ private:
     eq::Settings target;
     std::array<BandState, eq::kBands> band;
     Filter hpf, lpf, mono;
+    int stereoNow = 0;              // where the bands work now (Settings::stereo); changes at 0 dB
     double warm = 0, outGain = 1;   // warm: 0 .. 1 (harmonics fade with the switch)
     double dc[2] {}, dcC = 0;
     int countdown = 0;

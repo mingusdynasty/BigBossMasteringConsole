@@ -14,7 +14,8 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p)
         if (id == "eq")         u = std::make_unique<kit::EqPanel> (p.apvts);
         else if (id == "comp")  u = std::make_unique<kit::CompPanel> (p.apvts, p.compressor());
         else if (id == "tape")  u = std::make_unique<kit::TapePanel> (p.apvts, p.tapeMachine());
-        else if (id == "deess") u = std::make_unique<kit::DeEssPanel> (p.apvts, p.deesser(), [&p] { return p.deessSettings().freq; });
+        else if (id == "deess") u = std::make_unique<kit::DeEssPanel> (p.apvts, p.deesser(), [&p] { return p.deessSettings().freq; },
+                                                                     [&p] { return p.sampleRateHz.load(); });
         else                    u = std::make_unique<kit::LimitPanel> (p.apvts, p.limiter(), [&p] { return p.limitSettings(); });
         u->onDrag = [this, s] (int dy) { dragModule (s, dy); };
         u->onDrop = [this, s] { dropModule (s); };
@@ -29,6 +30,7 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p)
     master.analyserKey.onClick = [this] { showAnalyser (master.analyserKey.getToggleState()); };
     master.assistantKey.onClick = [this] { showAssistant (master.assistantKey.getToggleState()); };
     master.assistantNews = [this] { return assistant.hasNews() && ! assistant.isVisible(); };
+    master.onRecallSheet = [this] { exportRecallSheet(); };
     content.addChildComponent (assistant);
     assistant.onOrderChanged = [this] { layoutModules(); };
     assistant.onClose = [this] { showAssistant (false); };
@@ -73,17 +75,101 @@ void BigBossEditor::showAssistant (bool on)
 
 void BigBossEditor::tickAll (float seconds)
 {
+    proc.checkpoint();   // UNDO's history: a snapshot once an edit is finished
     assistant.tick (seconds);   // always: it keeps listening and working while folded away
     analyser.tick (seconds);   // always, so the loudness history has no gap
     master.tick (seconds);
     output.tick (seconds);
+    // the host can move the modules too (a session restored, a host undo, a program change)
+    if (draggingSlot < 0 && proc.getOrder() != laidOut) layoutModules();
     // every module, shown or not, so meters and the limiter's history have no gap
     for (auto& m : modules) m->tick (seconds);
+}
+
+juce::Image BigBossEditor::recallSheet()
+{
+    // the rack, with the modules showing
+    const bool wasAnalysing = analyser.isVisible(), wasAssisting = assistant.isVisible();
+    if (wasAnalysing) showAnalyser (false);
+    if (wasAssisting) assistant.setVisible (false);
+    const auto rack = content.createComponentSnapshot (content.getLocalBounds(), true, 1.0f);
+    if (wasAnalysing) showAnalyser (true);
+    if (wasAssisting) assistant.setVisible (true);
+
+    // every parameter, by unit
+    struct Group { const char* title; const char* prefix; juce::StringArray lines; };
+    std::vector<Group> groups { { "OUTPUT", "", {} }, { "BB-5  EQ", "eq_", {} }, { "BB-2  COMPRESSOR", "comp_", {} }, { "BB-80  TAPE", "tape_", {} },
+                                { "BB-S4  DE-ESSER", "deess_", {} }, { "BB-L1  LIMITER", "limit_", {} } };
+    for (auto* p : proc.getParameters())
+    {
+        auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p);
+        if (rp == nullptr) continue;
+        const auto id = rp->getParameterID();
+        auto* g = &groups[0];
+        for (auto& candidate : groups)
+            if (juce::String (candidate.prefix).isNotEmpty() && id.startsWith (candidate.prefix)) g = &candidate;
+        g->lines.add (rp->getName (40) + ":  " + rp->getCurrentValueAsText());
+    }
+    int rows = 0;
+    for (const auto& g : groups) rows = juce::jmax (rows, g.lines.size());
+
+    const int w = rack.getWidth(), header = 74, lineH = 15;
+    juce::Image sheet (juce::Image::RGB, w, rack.getHeight() + header + 34 + rows * lineH + 20, true);
+    juce::Graphics g (sheet);
+    g.fillAll (juce::Colour (0xfff4f1ea));
+    g.setColour (juce::Colour (0xff1a1a1a));
+    g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
+    g.drawText ("Big Boss Mastering Suite: recall sheet", 24, 12, w - 48, 28, juce::Justification::centredLeft);
+    juce::StringArray order;
+    const char* faceplate[] = { "BB-5", "BB-2", "BB-80", "BB-S4", "BB-L1" };
+    for (auto s : proc.getOrder())
+        if (s >= 0 && s < BigBossProcessor::kNumSlots && order.size() < BigBossProcessor::kNumSlots) order.add (faceplate[s]);
+    g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    g.drawText ("Preset: " + proc.getPresetName() + "     Slot " + juce::String::charToString ((juce::juce_wchar) ('A' + proc.activeSlot()))
+                + "     Order: " + order.joinIntoString (juce::String::fromUTF8 (" \xe2\x86\x92 "))
+                + "     " + juce::String (proc.sampleRateHz.load() / 1000.0, 1) + " kHz     "
+                + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H:%M"),
+                24, 42, w - 48, 20, juce::Justification::centredLeft);
+    g.drawImageAt (rack, 0, header);
+    const int top = header + rack.getHeight() + 14;
+    const int colW = (w - 48) / (int) groups.size();
+    for (size_t i = 0; i < groups.size(); ++i)
+    {
+        const int x = 24 + (int) i * colW;
+        g.setColour (juce::Colour (0xff1a1a1a));
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        g.drawText (groups[i].title, x, top, colW - 8, 18, juce::Justification::centredLeft);
+        g.setFont (juce::FontOptions (10.5f));
+        g.setColour (juce::Colour (0xff333333));
+        for (int k = 0; k < groups[i].lines.size(); ++k)
+            g.drawFittedText (groups[i].lines[k], x, top + 20 + k * lineH, colW - 8, lineH, juce::Justification::centredLeft, 1, 0.8f);
+    }
+    return sheet;
+}
+
+void BigBossEditor::exportRecallSheet()
+{
+    const auto start = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                           .getChildFile (juce::File::createLegalFileName (proc.getPresetName() + " recall.png"));
+    chooser = std::make_unique<juce::FileChooser> ("Export recall sheet", start, "*.png");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [this] (const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+        if (file == juce::File()) return;
+        file = file.withFileExtension ("png");
+        const auto img = recallSheet();
+        file.deleteFile();
+        juce::FileOutputStream os (file);
+        juce::PNGImageFormat png;
+        if (! os.openedOk() || ! png.writeImageToStream (img, os))
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Recall sheet", "Couldn't write " + file.getFullPathName());
+    });
 }
 
 void BigBossEditor::layoutModules()
 {
     const auto order = proc.getOrder();
+    laidOut = order;
     for (int k = 0; k < kModules; ++k)
         modules[(size_t) order[(size_t) k]]->setBounds (kit::earWidth, modulesTop + k * kit::unitHeight, kit::panelWidth, kit::unitHeight);
     master.setBounds (kit::earWidth, 0, kit::panelWidth, kit::masterHeight);

@@ -49,6 +49,11 @@ void addLayout (juce::AudioProcessorValueTreeState::ParameterLayout& layout, con
         { return v <= volumeMinDb ? juce::String ("-inf") : (v > 0.05f ? "+" : "") + juce::String (v, 1); })));
     // sums the output to mono after the fader, to check how the master holds up on one speaker
     layout.add (std::make_unique<juce::AudioParameterBool> (P { outMono, 1 }, "Output Mono", false));
+    // CEILING LOCK: a last true-peak guard at the limiter's ceiling, after the fader and MONO
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { outLock, 1 }, "Output Ceiling Lock", true));
+    // word length of what leaves the console; last of all, after the guard
+    layout.add (std::make_unique<juce::AudioParameterChoice> (P { outDither, 1 }, "Output Dither",
+                                                              juce::StringArray { "Off", "24-bit", "16-bit", "16-bit shaped" }, 0));
     for (int s = 0; s < numSlots; ++s)
         layout.add (std::make_unique<juce::AudioParameterBool> (P { bypass (slotIds[s]), 1 }, juce::String (slotNames[s]) + " Bypass", false));
 
@@ -70,6 +75,8 @@ void addLayout (juce::AudioProcessorValueTreeState::ParameterLayout& layout, con
     layout.add (std::make_unique<juce::AudioParameterBool> (P { eqHpf24, 1 }, "EQ High-pass 24 dB", false));
     layout.add (std::make_unique<juce::AudioParameterFloat> (P { eqLpf, 1 }, "EQ Low-pass", offRange (4000.0f, 30000.0f, true), 0.0f, hzAttr));
     layout.add (std::make_unique<juce::AudioParameterFloat> (P { eqMono, 1 }, "EQ Mono Bass", offRange (40.0f, 300.0f, false), 0.0f, hzAttr));
+    // where the five bands work: both channels, the mid only, or the side only (the filters stay stereo)
+    layout.add (std::make_unique<juce::AudioParameterChoice> (P { eqStereo, 1 }, "EQ Stereo Mode", juce::StringArray { "Stereo", "Mid", "Side" }, 0));
     layout.add (std::make_unique<juce::AudioParameterFloat> (P { eqOut, 1 }, "EQ Output", juce::NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, dbAttr()));
 
     // tape
@@ -83,6 +90,15 @@ void addLayout (juce::AudioProcessorValueTreeState::ParameterLayout& layout, con
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         P { tapeWow, 1 }, "Tape Wow & Flutter", juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 25.0f,
         juce::AudioParameterFloatAttributes().withLabel ("%").withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + "%"; })));
+    // the machine's imperfections, all off (or at zero) to start
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { tapeXtalk, 1 }, "Tape Crosstalk", false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        P { tapeAzimuth, 1 }, "Tape Azimuth Error", juce::NormalisableRange<float> (0.0f, 20.0f, 0.1f), 0.0f,
+        juce::AudioParameterFloatAttributes().withLabel ("us").withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + juce::String::fromUTF8 (" µs"); })));
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { tapeHiss, 1 }, "Tape Hiss", false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        P { tapeBiasTrim, 1 }, "Tape Bias Trim", juce::NormalisableRange<float> (-1.0f, 1.0f, 0.01f), 0.0f,
+        juce::AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return (v > 0 ? "+" : "") + juce::String (v, 2); })));
 
     // compressor
     auto thr = [] (float lo, float hi) { return juce::NormalisableRange<float> (lo, hi, 0.1f); };
@@ -100,6 +116,7 @@ void addLayout (juce::AudioProcessorValueTreeState::ParameterLayout& layout, con
     layout.add (std::make_unique<juce::AudioParameterFloat> (P { compVcaGain, 1 }, "Comp Discrete Gain", thr (-6.0f, 12.0f), 0.0f, dbAttr()));
     layout.add (std::make_unique<juce::AudioParameterChoice> (P { compXfmr, 1 }, "Comp Transformer", juce::StringArray { "Nickel", "Iron", "Steel" }, 0));
     layout.add (std::make_unique<juce::AudioParameterBool> (P { compScHpf, 1 }, "Comp Sidechain High-pass", true));
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { compLink, 1 }, "Comp Stereo Link", true));
 
     // limiter
     layout.add (std::make_unique<juce::AudioParameterFloat> (P { limDrive, 1 }, "Limiter Drive", thr (0.0f, 24.0f), 0.0f, dbAttr()));
@@ -115,6 +132,8 @@ void addLayout (juce::AudioProcessorValueTreeState::ParameterLayout& layout, con
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         P { limLink, 1 }, "Limiter Stereo Link", juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f,
         juce::AudioParameterFloatAttributes().withLabel ("%").withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + "%"; })));
+    // STAY LAST: the limiter is kept at the end of the chain, whatever order is set
+    layout.add (std::make_unique<juce::AudioParameterBool> (P { limLast, 1 }, "Limiter Stay Last", true));
 
     // de-esser
     layout.add (std::make_unique<juce::AudioParameterFloat> (P { deessThr, 1 }, "De-esser Threshold", thr (-24.0f, 12.0f), -6.0f, dbAttr()));

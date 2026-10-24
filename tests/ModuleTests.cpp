@@ -7,6 +7,7 @@
 #include "chain/TapeModule.h"
 #include "eq/ClassAEq.h"
 #include "tape/TapeMachine.h"
+#include "dsp/Dither.h"
 
 #include <algorithm>
 #include <cmath>
@@ -281,6 +282,67 @@ static void testTape()
         }
         s.wow = 0;
     }
+    {   // the opt-in extras: crosstalk, azimuth, hiss, bias trim
+        auto rightFromLeft = [&] (bool xt)
+        {
+            bb::TapeMachine t;
+            auto st = s; st.crosstalk = xt;
+            auto p = tapeProc (t, st, sr);
+            auto l = sine (sr, 1000, 0.3, 1.0);
+            std::vector<double> r (l.size(), 0.0);
+            runBlocks (p, l, r);
+            return 20 * std::log10 (std::max (harmonic (r, sr, 1000, 1), 1e-12) / harmonic (l, sr, 1000, 1));
+        };
+        const double off = rightFromLeft (false), on = rightFromLeft (true);
+        CHECK (off < -120 && on > -46 && on < -40, "tape crosstalk at 1 kHz: %.1f dB off, %.1f dB on", off, on);
+
+        auto monoTop = [&] (double us)
+        {
+            bb::TapeMachine t;
+            auto st = s; st.azimuthUs = us;
+            auto p = tapeProc (t, st, sr);
+            auto l = sine (sr, 15000, 0.05, 1.0), r = l;
+            runBlocks (p, l, r);
+            std::vector<double> m (l.size());
+            for (size_t i = 0; i < l.size(); ++i) m[i] = 0.5 * (l[i] + r[i]);
+            return 20 * std::log10 (harmonic (m, sr, 15000, 1) / harmonic (l, sr, 15000, 1));
+        };
+        const double az0 = monoTop (0), az20 = monoTop (20);
+        CHECK (std::abs (az0) < 0.05 && az20 < -3.5 && az20 > -6, "tape azimuth: 15 kHz in mono %.2f dB at 0 us, %.2f dB at 20 us", az0, az20);
+
+        auto hissDb = [&] (int tape, int speed)
+        {
+            bb::TapeMachine t;
+            auto st = s; st.hiss = true; st.tape = tape; st.speed = speed;
+            auto p = tapeProc (t, st, sr);
+            std::vector<double> l ((size_t) sr * 2, 0.0), r = l;
+            runBlocks (p, l, r);
+            double e = 0;
+            for (size_t i = l.size() / 2; i < l.size(); ++i) e += l[i] * l[i] + r[i] * r[i];
+            return 10 * std::log10 (e / (double) l.size());
+        };
+        const double h456 = hissDb (0, 0), hGp9 = hissDb (1, 0), h30 = hissDb (0, 1);
+        CHECK (h456 > -87 && h456 < -81 && hGp9 < h456 - 1 && h30 < h456 - 1, "tape hiss: 456 15 ips %.1f, GP9 %.1f, 30 ips %.1f dBFS RMS", h456, hGp9, h30);
+
+        auto trimmed = [&] (int bias, double trim) { auto st = s; st.bias = bias; st.biasTrim = trim; return tapeThd (st, sr, 4); };
+        const double nom = trimmed (1, 0), up = trimmed (1, 1), over = trimmed (2, 0), down = trimmed (1, -1), under = trimmed (0, 0);
+        CHECK (over < up && up < nom && nom < down && down < under, "tape bias trim: under %.3f%%, -1 %.3f%%, nominal %.3f%%, +1 %.3f%%, over %.3f%%",
+               100 * under, 100 * down, 100 * nom, 100 * up, 100 * over);
+
+        // a trim sweep is smooth
+        bb::TapeMachine t;
+        t.setSettings (s); t.prepare (sr, 256);
+        auto l = sine (sr, 300, 0.2, 1.5), r = l;
+        for (size_t pos = 0; pos < l.size(); pos += 256)
+        {
+            auto st = s;
+            st.biasTrim = pos < (size_t) (0.5 * sr) ? 0.0 : (pos < (size_t) (0.6 * sr) ? 1.0 : -1.0);
+            t.setSettings (st);
+            t.process (l.data() + pos, r.data() + pos, (int) std::min<size_t> (256, l.size() - pos));
+        }
+        const double rough = roughness (l, sr, 300, 0.2 * 1.2, (size_t) (0.3 * sr), l.size());
+        CHECK (rough < 1.1, "tape bias trim jumps: step %.2fx the largest clean step", rough);
+    }
     {   // switching speed or tape mid-signal crossfades instead of clicking
         bb::TapeMachine t;
         t.setSettings (s); t.prepare (sr, 256);
@@ -366,8 +428,149 @@ static void testReorder()
     }
 }
 
+// the output's dither: on the word's grid, TPDF noise at the right level, shaped noise pushed up
+static void testDither()
+{
+    const double sr = 44100;
+    const int n = (int) sr * 2;
+    auto band = [&] (const std::vector<double>& e, double lo, double hi)   // mean power in a band, via DFT bins
+    {
+        double p = 0; int k = 0;
+        for (double f = lo; f < hi; f += 97.0)
+        {
+            double re = 0, im = 0;
+            for (int i = 0; i < n; ++i) { const double ph = 2 * kPi * f * i / sr; re += e[(size_t) i] * std::cos (ph); im += e[(size_t) i] * std::sin (ph); }
+            p += re * re + im * im; ++k;
+        }
+        return 10 * std::log10 (p / k);
+    };
+    std::vector<double> err[3];
+    for (int mode : { bb::Dither::Bits24, bb::Dither::Bits16, bb::Dither::Bits16Shaped })
+    {
+        bb::Dither d;
+        auto l = sine (sr, 997, 0.25, 2.0), r = sine (sr, 997, 0.25, 2.0);
+        const auto in = l;
+        for (int pos = 0; pos < n; pos += 512) d.process (l.data() + pos, r.data() + pos, std::min (512, n - pos), mode);
+        const double q = mode == bb::Dither::Bits24 ? 8388608.0 : 32768.0;
+        bool onGrid = true;
+        double e2 = 0, lr = 0;
+        std::vector<double> e ((size_t) n);
+        for (int i = 0; i < n; ++i)
+        {
+            onGrid = onGrid && std::abs (l[(size_t) i] * q - std::round (l[(size_t) i] * q)) < 1e-6;
+            e[(size_t) i] = (l[(size_t) i] - in[(size_t) i]) * q;   // in LSBs
+            e2 += e[(size_t) i] * e[(size_t) i];
+            lr += e[(size_t) i] * (r[(size_t) i] - in[(size_t) i]) * q;
+        }
+        const double rms = std::sqrt (e2 / n);
+        CHECK (onGrid, "dither %d: every sample is on the word's grid", mode);
+        if (mode != bb::Dither::Bits16Shaped)
+        {
+            // TPDF dither: the total error is 1/4 LSB^2 (three times undithered rounding's 1/12), 0.5 LSB rms
+            CHECK (std::abs (rms - 0.5) < 0.02, "dither %d: TPDF noise %.3f LSB rms (0.5 expected)", mode, rms);
+            CHECK (std::abs (lr / e2) < 0.02, "dither %d: the channels' noise is independent (correlation %.3f)", mode, lr / e2);
+        }
+        err[mode - 1] = e;
+    }
+    // shaped: less noise where the ear is most sensitive (1 - 5 kHz), more near the top of the band
+    const double flatMid = band (err[1], 1000, 5000), shapedMid = band (err[2], 1000, 5000);
+    const double flatTop = band (err[1], 17000, 21000), shapedTop = band (err[2], 17000, 21000);
+    CHECK (shapedMid < flatMid - 6, "dither shaped: %.1f dB less noise at 1-5 kHz", flatMid - shapedMid);
+    CHECK (shapedTop > flatTop + 6, "dither shaped: %.1f dB more noise at 17-21 kHz, where it is least audible", shapedTop - flatTop);
+}
+
+// bypassing the EQ fades to a dry signal in phase with it, so the top end doesn't dip during the fade
+static void testEqBypass()
+{
+    for (double sr : { 44100.0, 48000.0 })
+    {
+        bb::Chain chain;
+        chain.add (std::make_unique<bb::EqModule>());
+        chain.prepare (sr, 256);
+        const double hz = 15000;
+        auto l = sine (sr, hz, 0.5, 0.6), r = l;
+        const int n = (int) l.size();
+        for (int pos = 0; pos < n; pos += 256)
+        {
+            if (pos == (int) (0.3 * sr) / 256 * 256) chain.setBypassed (0, true);
+            chain.process (l.data() + pos, r.data() + pos, std::min (256, n - pos));
+        }
+        // the tone's level in 1 ms windows (its own DFT bin), through the fade
+        double lo = 1, hi = 0;
+        const int w = (int) (0.001 * sr);
+        for (int i = (int) (0.1 * sr); i + w < n; i += w / 2)
+        {
+            double re = 0, im = 0;
+            for (int k = i; k < i + w; ++k) { re += l[(size_t) k] * std::cos (2 * kPi * hz * k / sr); im += l[(size_t) k] * std::sin (2 * kPi * hz * k / sr); }
+            const double a = 2 * std::hypot (re, im) / w;
+            lo = std::min (lo, a); hi = std::max (hi, a);
+        }
+        CHECK (20 * std::log10 (hi / lo) < 0.2, "eq bypass at %.0f: 15 kHz holds its level through the fade (%.2f dB swing)", sr, 20 * std::log10 (hi / lo));
+    }
+}
+
+// M/S on the BB-5: in MID the bands touch only the mid, in SIDE only the side
+static void testEqStereoModes()
+{
+    const double sr = 48000;
+    for (int mode : { 1, 2 })
+    {
+        // the level (dB) a 1 kHz tone comes out at, for a mid-only (L = R) or side-only (L = -R) input,
+        // with +6 dB at 1 kHz in the mid band
+        auto level = [&] (bool sideIn)
+        {
+            bb::ClassAEq eq;
+            bb::eq::Settings st;
+            st.band[2] = { 1000.0, 6.0, false, false };
+            st.stereo = mode;
+            eq.setSettings (st);
+            eq.prepare (sr, 512);
+            auto l = sine (sr, 1000, 0.1, 0.5), r = l;
+            if (sideIn) for (auto& v : r) v = -v;
+            runBlocks ([&] (double* a, double* b, int n) { eq.process (a, b, n); }, l, r);
+            double peak = 0;
+            for (size_t i = l.size() / 2; i < l.size(); ++i) peak = std::max (peak, std::abs (l[i]));
+            return 20 * std::log10 (peak / 0.1);
+        };
+        const double mid = level (false), side = level (true);
+        const double boosted = mode == 1 ? mid : side, untouched = mode == 1 ? side : mid;
+        CHECK (std::abs (boosted - 6.0) < 0.3, "eq %s mode: the %s gets the boost (%+.2f dB)", mode == 1 ? "MID" : "SIDE", mode == 1 ? "mid" : "side", boosted);
+        CHECK (std::abs (untouched) < 0.05, "eq %s mode: the %s is untouched (%+.3f dB)", mode == 1 ? "MID" : "SIDE", mode == 1 ? "side" : "mid", untouched);
+    }
+
+    // switching the mode under a boost fades the bands through 0 dB and back: no worse than turning
+    // the band's gain down by hand (the EQ's ordinary 20 ms glide)
+    auto across = [&] (bool switchMode)
+    {
+        bb::ClassAEq eq;
+        bb::eq::Settings st;
+        st.band[2] = { 1000.0, 9.0, false, false };
+        eq.setSettings (st);
+        eq.prepare (sr, 256);
+        auto l = sine (sr, 1000, 0.1, 0.6), r = sine (sr, 1000, 0.05, 0.6);
+        for (size_t pos = 0; pos < l.size(); pos += 256)
+        {
+            if (pos == 256 * 80)
+            {
+                if (switchMode) st.stereo = 2; else st.band[2].gain = 0.0;
+                eq.setSettings (st);
+            }
+            eq.process (l.data() + pos, r.data() + pos, (int) std::min<size_t> (256, l.size() - pos));
+        }
+        double worst = 0;
+        for (size_t i = 256 * 80; i < l.size(); ++i)
+            worst = std::max (worst, std::abs (l[i] - 4 * l[i - 1] + 6 * l[i - 2] - 4 * l[i - 3] + l[i - 4]));
+        return worst;
+    };
+    const double modeSwitch = across (true), byHand = across (false);
+    CHECK (modeSwitch < byHand * 1.2, "eq stereo mode switches as smoothly as a gain move (4th difference %g, by hand %g)", modeSwitch, byHand);
+}
+
 int main()
 {
+    testEqStereoModes();
+    testEqBypass();
+    testDither();
     testEq();
     testTape();
     testReorder();

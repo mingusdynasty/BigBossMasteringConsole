@@ -80,6 +80,12 @@ BigBossProcessor::BigBossProcessor()
     pInTrim  = apvts.getRawParameterValue (pid::inTrim);
     pVolume  = apvts.getRawParameterValue (pid::volume);
     pOutMono = apvts.getRawParameterValue (pid::outMono);
+    pLock    = apvts.getRawParameterValue (pid::outLock);
+    pDither  = apvts.getRawParameterValue (pid::outDither);
+    pLimitLast = apvts.getRawParameterValue (pid::limLast);
+
+    guardLimit = new bb::LimitModule();
+    guard.add (std::unique_ptr<bb::Module> (guardLimit));
 
     auto raw = [this] (const juce::String& pidStr) { return apvts.getRawParameterValue (pidStr); };
     for (int b = 0; b < bb::eq::kBands; ++b)
@@ -90,16 +96,124 @@ BigBossProcessor::BigBossProcessor()
         if (bb::eq::kRange[b].canShelf) pEq.shelf[(size_t) b] = raw (pid::eqShelf (b));
     }
     pEq.warm = raw (pid::eqWarm); pEq.hpf = raw (pid::eqHpf); pEq.hpf24 = raw (pid::eqHpf24);
-    pEq.lpf = raw (pid::eqLpf); pEq.mono = raw (pid::eqMono); pEq.out = raw (pid::eqOut);
+    pEq.lpf = raw (pid::eqLpf); pEq.mono = raw (pid::eqMono); pEq.out = raw (pid::eqOut); pEq.stereo = raw (pid::eqStereo);
     pTape = { raw (pid::tapeSpeed), raw (pid::tapeEq), raw (pid::tapeType), raw (pid::tapeBias),
-              raw (pid::tapeIn), raw (pid::tapeOut), raw (pid::tapeLink), raw (pid::tapeWow) };
+              raw (pid::tapeIn), raw (pid::tapeOut), raw (pid::tapeLink), raw (pid::tapeWow),
+              raw (pid::tapeXtalk), raw (pid::tapeAzimuth), raw (pid::tapeHiss), raw (pid::tapeBiasTrim) };
     pComp = { raw (pid::compOpto), raw (pid::compOptoThr), raw (pid::compOptoGain), raw (pid::compVca), raw (pid::compVcaThr),
               raw (pid::compRatio), raw (pid::compAttack), raw (pid::compRecovery), raw (pid::compVcaGain), raw (pid::compXfmr),
-              raw (pid::compScHpf) };
+              raw (pid::compScHpf), raw (pid::compLink) };
     pLimit = { raw (pid::limDrive), raw (pid::limCeiling), raw (pid::limStyle), raw (pid::limAuto), raw (pid::limRelease),
                raw (pid::limTp), raw (pid::limLink) };
     pDeess = { raw (pid::deessThr), raw (pid::deessRange), raw (pid::deessFreq), raw (pid::deessRelease), raw (pid::deessMode),
                raw (pid::deessListen) };
+
+    assistantHost = std::make_unique<AssistantHost> (*this);
+    addListener (this);
+}
+
+BigBossProcessor::~BigBossProcessor()
+{
+    removeListener (this);
+    assistantHost.reset();   // stops its worker before anything it uses goes
+}
+
+// ------------------------------------------------------------------ reference track
+
+bool BigBossProcessor::loadReference (const juce::File& file, juce::String& error)
+{
+    auto t = ReferenceTrack::load (file, sampleRateHz.load(), error);
+    if (t == nullptr) return false;
+    {
+        const juce::SpinLock::ScopedLockType hold (refLock);
+        ref = std::move (t);
+        refPos = 0;
+    }
+    ++refVersion;
+    return true;
+}
+
+void BigBossProcessor::clearReference()
+{
+    refPlay.store (false);
+    std::shared_ptr<ReferenceTrack> old;
+    {
+        const juce::SpinLock::ScopedLockType hold (refLock);
+        old = std::move (ref);   // freed outside the lock
+        ref.reset();
+    }
+    ++refVersion;
+}
+
+std::shared_ptr<const ReferenceTrack> BigBossProcessor::reference() const
+{
+    const juce::SpinLock::ScopedLockType hold (refLock);
+    return ref;
+}
+
+// ------------------------------------------------------------------ A/B/C/D and undo
+
+BigBossProcessor::Snapshot BigBossProcessor::snapshot (bool sessionToo) const
+{
+    Snapshot s;
+    for (const auto& [id, v] : currentValues())
+        if (sessionToo || ! sessionOnly (id)) s.values[id] = v;
+    s.order = getOrder();
+    s.used = true;
+    return s;
+}
+
+void BigBossProcessor::restore (const Snapshot& s, Apply how)
+{
+    applyValues (s.values, false, how);
+    setOrder (s.order);
+}
+
+void BigBossProcessor::selectSlot (int i)
+{
+    if (i < 0 || i >= kCompareSlots || i == compareActive) return;
+    compareSlots[(size_t) compareActive] = snapshot (false);
+    compareActive = i;
+    auto& slot = compareSlots[(size_t) i];
+    if (! slot.used) slot = snapshot (false);   // a fresh slot starts where we are
+    else restore (slot, Apply::Normal);
+    noteEdit();
+}
+
+void BigBossProcessor::copyToSlot (int i)
+{
+    if (i < 0 || i >= kCompareSlots) return;
+    compareSlots[(size_t) i] = snapshot (false);
+}
+
+void BigBossProcessor::checkpoint()
+{
+    if (gesturesOpen.load() > 0 || ! editPending.exchange (false)) return;
+    auto now = snapshot (true);
+    if (historyAt >= 0 && history[(size_t) historyAt] == now) return;
+    history.resize ((size_t) (historyAt + 1));   // a new edit drops what could be redone
+    history.push_back (std::move (now));
+    if (history.size() > 100) history.erase (history.begin());
+    historyAt = (int) history.size() - 1;
+}
+
+bool BigBossProcessor::undo()
+{
+    checkpoint();   // an edit not yet recorded is the one to undo
+    if (! canUndo()) return false;
+    --historyAt;
+    restore (history[(size_t) historyAt], Apply::Normal);
+    editPending.store (false);
+    return true;
+}
+
+bool BigBossProcessor::redo()
+{
+    if (! canRedo()) return false;
+    ++historyAt;
+    restore (history[(size_t) historyAt], Apply::Normal);
+    editPending.store (false);
+    return true;
 }
 
 bb::DeEsser::Settings BigBossProcessor::deessSettings() const
@@ -128,6 +242,7 @@ bb::DualCompressor::Settings BigBossProcessor::compSettings() const
     s.vcaGain = pComp.vcaGain->load();
     s.transformer = juce::roundToInt (pComp.xfmr->load());
     s.sidechainHpf = pComp.scHpf->load() > 0.5f;
+    s.link = pComp.link->load() > 0.5f;
     return s;
 }
 
@@ -142,6 +257,18 @@ bb::Limiter::Settings BigBossProcessor::limitSettings() const
     s.truePeak = pLimit.tp->load() > 0.5f;
     s.link = pLimit.link->load() / 100.0;
     return s;
+}
+
+namespace
+{
+// the CEILING LOCK's limiter: transparent, no drive, true peak, linked, at the BB-L1's ceiling
+bb::Limiter::Settings guardSettings (double ceilingDb)
+{
+    bb::Limiter::Settings s;
+    s.ceilingDb = ceilingDb;
+    s.style = bb::Limiter::Transparent;
+    return s;
+}
 }
 
 bb::eq::Settings BigBossProcessor::eqSettings() const
@@ -160,6 +287,7 @@ bb::eq::Settings BigBossProcessor::eqSettings() const
     s.lpfHz = pEq.lpf->load();
     s.monoBassHz = pEq.mono->load();
     s.outputDb = pEq.out->load();
+    s.stereo = juce::roundToInt (pEq.stereo->load());
     return s;
 }
 
@@ -174,6 +302,10 @@ bb::TapeMachine::Settings BigBossProcessor::tapeSettings() const
     s.outputDb = pTape.out->load();
     s.link     = pTape.link->load() > 0.5f;
     s.wow      = pTape.wow->load() / 100.0;
+    s.crosstalk = pTape.xtalk->load() > 0.5f;
+    s.azimuthUs = pTape.azimuth->load();
+    s.hiss     = pTape.hiss->load() > 0.5f;
+    s.biasTrim = pTape.biasTrim->load();
     return s;
 }
 
@@ -198,11 +330,17 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     deess->settings = deessSettings();
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     chain.prepare (sampleRate, block);
+    guardLimit->settings = guardSettings (pLimit.ceiling->load());
+    guard.setBypassed (0, pLock->load() < 0.5f);
+    guard.prepare (sampleRate, block);
+    overMeter.prepare (sampleRate, 2);
+    dither.reset();
     const int nch = juce::jmax (1, getTotalNumInputChannels());
     inMeters.prepare (sampleRate, nch);
     outMeters.prepare (sampleRate, nch);
 
-    latency = chain.latency();
+    // the guard's latency counts whether it is on or not, so switching it never moves anything in time
+    latency = chain.latency() + guard.latency();
     setLatencySamples (latency);
     int len = 1;
     while (len < latency + 1) len <<= 1;
@@ -214,20 +352,55 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     inGain  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
     outGain = volumeGain (pVolume->load());
 
+    {
+        std::shared_ptr<ReferenceTrack> t;
+        {
+            const juce::SpinLock::ScopedLockType holdRef (refLock);
+            t = ref;
+        }
+        if (t != nullptr && std::abs (t->rate - sampleRate) > 0.5) t = t->atRate (sampleRate);   // outside the lock: it takes a while
+        const juce::SpinLock::ScopedLockType holdRef (refLock);
+        ref = t;
+        refPos = 0;
+        refMix = refPlay.load() && ref != nullptr ? 1.0 : 0.0;
+    }
+    heardFor = 0;
+
+    const juce::SpinLock::ScopedLockType hold (captureLock);
+    captureRequest.store (false);
     capturing.store (false);
     captureFull.store (false);
+    capturePos.store (0);
     for (auto& c : capture) c.assign ((size_t) (kCaptureSeconds * sampleRate), 0.0f);
 }
 
 void BigBossProcessor::reset()
 {
     chain.reset();
+    guard.reset();
+    overMeter.reset();
+    dither.reset();
     for (auto& l : bypassLine) std::fill (l.begin(), l.end(), 0.0);
+}
+
+int BigBossProcessor::limiterSlot() const
+{
+    return chain.slotOf ("limit");
+}
+
+bb::Chain::Order BigBossProcessor::constrained (bb::Chain::Order o) const
+{
+    if (pLimitLast->load (std::memory_order_relaxed) < 0.5f) return o;
+    const auto end = o.begin() + kNumSlots;
+    const auto it = std::find (o.begin(), end, limiterSlot());
+    if (it != end) std::rotate (it, it + 1, end);   // the limiter to the end, the rest kept in order
+    return o;
 }
 
 void BigBossProcessor::setOrder (const bb::Chain::Order& o)
 {
-    chain.setOrder (o);
+    chain.setOrder (constrained (o));
+    noteEdit();
 }
 
 float BigBossProcessor::takePeakDb (bool output, int ch)
@@ -253,6 +426,27 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     const double inTarget  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
     const double outTarget = volumeGain (pVolume->load());
+    const double ceilingDb = pLimit.ceiling->load();
+    const bool lock = pLock->load() > 0.5f;
+    guardLimit->settings = guardSettings (ceilingDb);
+    guard.setBypassed (0, ! lock);
+    const int ditherMode = juce::roundToInt (pDither->load());
+    // STAY LAST, switched on (or an order set some other way): the limiter goes back to the end
+    if (pLimitLast->load() > 0.5f)
+    {
+        const auto o = chain.order();
+        if (o[(size_t) kNumSlots - 1] != limiterSlot()) chain.setOrder (constrained (o));
+    }
+    if (captureRequest.exchange (false))
+    {
+        capturePos.store (0, std::memory_order_relaxed);
+        captureFull.store (false, std::memory_order_relaxed);
+        capturing.store (true, std::memory_order_release);
+    }
+    // an output true peak this far over the ceiling lights the OVER lamp (the guard's own margin keeps
+    // it below this when CEILING LOCK is on)
+    const double overLimit = juce::Decibels::decibelsToGain (ceilingDb + 0.05);
+    float over = 0.0f, caught = 0.0f;
 
     T* outL = buffer.getWritePointer (0);
     T* outR = nIn > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -266,7 +460,7 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
 
         inMeters.process (l, outR ? r : l, k);
         notePeaks (inPeak, l, outR ? r : l, k);
-        if (capturing.load (std::memory_order_relaxed)) captureBlock (l, outR ? r : l, k);
+        if (capturing.load (std::memory_order_acquire)) captureBlock (l, outR ? r : l, k);
         delayDry (l, r, dryL.data(), dryR.data(), k);
 
         // trims glide linearly across the chunk
@@ -294,19 +488,83 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
             }
         }
 
+        // CEILING LOCK, then the word length: the last of the console
+        guard.process (l, r, k);
+        if (lock) caught = juce::jmax (caught, guardLimit->limiter.reduction());
+        dither.process (l, r, k, ditherMode);
+        {
+            const double* chs[2] { l, r };
+            overMeter.process (chs, k);
+            const double peak = juce::jmax (overMeter.takeBlockPeak (0), overMeter.takeBlockPeak (1));
+            if (peak > overLimit) over = juce::jmax (over, (float) juce::Decibels::gainToDecibels (peak) - (float) ceilingDb);
+        }
+
+        // MATCH and REF follow the loudness of what the console puts out, and of what came in, while
+        // the console is what's heard (and has been for the length of the short-term window)
+        const double rate = sampleRateHz.load (std::memory_order_relaxed);
+        if (dryMix <= 0.0 && refMix <= 0.0) heardFor += k; else heardFor = 0;
+        if (heardFor > (int) (3.2 * rate))
+        {
+            const double in = inMeters.readings.shortTerm.load (std::memory_order_relaxed);
+            const double outNow = outMeters.readings.shortTerm.load (std::memory_order_relaxed);
+            const double c = 1.0 - std::exp (-(double) k / (2.0 * rate));   // a 2 s glide
+            if (outNow > -50.0) loudOut = loudOut < -100.0 ? outNow : loudOut + c * (outNow - loudOut);
+            if (in > -50.0 && outNow > -50.0)
+            {
+                const double diff = juce::jlimit (-24.0, 24.0, outNow - in);
+                matchEst += c * (diff - matchEst);
+                matchDb.store ((float) matchEst, std::memory_order_relaxed);
+            }
+        }
+
         // BYPASS ALL: an equal-gain raised-cosine crossfade to the delayed dry signal (the two are
-        // time-aligned, so nothing combs while it moves)
+        // time-aligned, so nothing combs while it moves), at the console's loudness with MATCH
         const bool bypassed = bypassAll.load (std::memory_order_relaxed);
+        const double dryTarget = matchCompare.load (std::memory_order_relaxed) ? juce::Decibels::decibelsToGain (matchEst) : 1.0;
         if (bypassed || dryMix > 0.0)
         {
-            const double step = 1.0 / (kBypassFade * sampleRateHz.load (std::memory_order_relaxed));
+            const double step = 1.0 / (kBypassFade * rate);
+            const double dg = (dryTarget - dryGain) / k;
             for (int i = 0; i < k; ++i)
             {
                 dryMix = bypassed ? juce::jmin (1.0, dryMix + step) : juce::jmax (0.0, dryMix - step);
+                dryGain += dg;
                 const double g = 0.5 - 0.5 * std::cos (dryMix * juce::MathConstants<double>::pi);
-                l[i] += g * (dryL[(size_t) i] - l[i]);
-                r[i] += g * (dryR[(size_t) i] - r[i]);
+                l[i] += g * (dryGain * dryL[(size_t) i] - l[i]);
+                r[i] += g * (dryGain * dryR[(size_t) i] - r[i]);
             }
+        }
+        dryGain = dryTarget;
+
+        // REF: the reference track, looping, at the console's loudness, crossfaded over everything
+        const bool playRef = refPlay.load (std::memory_order_relaxed);
+        if (playRef || refMix > 0.0)
+        {
+            const juce::SpinLock::ScopedTryLockType hold (refLock);
+            const ReferenceTrack* t = hold.isLocked() ? ref.get() : nullptr;
+            const int len = t != nullptr ? t->audio.getNumSamples() : 0;
+            const double refTarget = t == nullptr ? 0.0
+                                   : juce::Decibels::decibelsToGain (loudOut > -100.0 ? juce::jlimit (-30.0, 30.0, loudOut - t->lufs) : 0.0);
+            refGainDb.store ((float) juce::Decibels::gainToDecibels (refTarget, -100.0), std::memory_order_relaxed);
+            const double step = 1.0 / (kBypassFade * rate);
+            const double rg = (refTarget - refGain) / k;
+            for (int i = 0; i < k; ++i)
+            {
+                refMix = playRef && len > 0 ? juce::jmin (1.0, refMix + step) : juce::jmax (0.0, refMix - step);
+                refGain += rg;
+                double a = 0, b = 0;
+                if (len > 0)
+                {
+                    if (refPos >= len) refPos = 0;
+                    a = refGain * t->audio.getSample (0, refPos);
+                    b = refGain * t->audio.getSample (1, refPos);
+                    ++refPos;
+                }
+                const double g = 0.5 - 0.5 * std::cos (refMix * juce::MathConstants<double>::pi);
+                l[i] += g * (a - l[i]);
+                r[i] += g * (b - r[i]);
+            }
+            refGain = refTarget;
         }
 
         outMeters.process (l, outR ? r : l, k);
@@ -315,6 +573,8 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
         for (int i = 0; i < k; ++i) outL[off + i] = (T) l[i];
         if (outR) for (int i = 0; i < k; ++i) outR[off + i] = (T) r[i];
     }
+    if (over > overDb.load (std::memory_order_relaxed)) overDb.store (over, std::memory_order_relaxed);
+    if (caught > lockDb.load (std::memory_order_relaxed)) lockDb.store (caught, std::memory_order_relaxed);
 }
 
 void BigBossProcessor::delayDry (const double* l, const double* r, double* outL, double* outR, int n)
@@ -361,6 +621,8 @@ juce::AudioProcessorEditor* BigBossProcessor::createEditor() { return new BigBos
 
 void BigBossProcessor::captureBlock (const double* l, const double* r, int n)
 {
+    const juce::SpinLock::ScopedTryLockType hold (captureLock);
+    if (! hold.isLocked() || capture[0].empty()) return;
     // keep blocks with something in them (above -50 dBFS), so pauses don't count
     double peak = 0;
     for (int i = 0; i < n; ++i) peak = std::max ({ peak, std::abs (l[i]), std::abs (r[i]) });
@@ -380,11 +642,9 @@ void BigBossProcessor::captureBlock (const double* l, const double* r, int n)
 
 void BigBossProcessor::startCapture()
 {
-    if (capture[0].empty()) return;
-    capturing.store (false);
+    // the audio thread starts it at its next block, so a block already writing never races the reset
     captureFull.store (false);
-    capturePos.store (0);
-    capturing.store (true, std::memory_order_release);
+    captureRequest.store (true, std::memory_order_release);
 }
 
 float BigBossProcessor::captureProgress() const
@@ -394,6 +654,7 @@ float BigBossProcessor::captureProgress() const
 
 bool BigBossProcessor::takeCapture (std::vector<float>& l, std::vector<float>& r, double& rate)
 {
+    const juce::SpinLock::ScopedLockType hold (captureLock);
     if (! captureFull.exchange (false, std::memory_order_acquire)) return false;
     l = capture[0];
     r = capture[1];
@@ -405,6 +666,7 @@ bb::assist::Order BigBossProcessor::assistOrder() const
 {
     // the assistant's slots are the processor's, in the same order
     static_assert (kNumSlots == bb::assist::kSlots);
+    static_assert (kCompareSlots == 4, "the master section has four slot keys");
     const auto o = chain.order();
     bb::assist::Order a {};
     for (int k = 0; k < kNumSlots; ++k) a[(size_t) k] = o[(size_t) k];
@@ -420,20 +682,40 @@ presets::Values BigBossProcessor::currentValues() const
     return v;
 }
 
-void BigBossProcessor::applyValues (const presets::Values& values, bool othersToDefault)
+bool BigBossProcessor::sessionOnly (const juce::String& id)
+{
+    return id == pid::inTrim || id == pid::volume || id == pid::outMono || id == pid::outLock || id == pid::outDither
+        || id == pid::limLast;
+}
+
+void BigBossProcessor::applyValues (const presets::Values& values, bool othersToDefault, Apply how)
 {
     for (auto* p : getParameters())
     {
         auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p);
         if (rp == nullptr) continue;
+        if (how == Apply::Preset && sessionOnly (rp->getParameterID())) continue;
         const auto it = values.find (rp->getParameterID());
         if (it == values.end() && ! othersToDefault) continue;
         const float norm = it != values.end() ? rp->convertTo0to1 (it->second) : rp->getDefaultValue();
         if (std::abs (norm - rp->getValue()) < 1e-6f) continue;
-        rp->beginChangeGesture();
+        const bool gesture = how != Apply::Restore;
+        if (gesture) rp->beginChangeGesture();
         rp->setValueNotifyingHost (norm);
-        rp->endChangeGesture();
+        if (gesture) rp->endChangeGesture();
     }
+}
+
+juce::String BigBossProcessor::getPresetName() const
+{
+    const juce::SpinLock::ScopedLockType hold (presetNameLock);
+    return presetName;
+}
+
+void BigBossProcessor::setPresetName (const juce::String& name)
+{
+    const juce::SpinLock::ScopedLockType hold (presetNameLock);
+    presetName = name;
 }
 
 const juce::String BigBossProcessor::getProgramName (int i)
@@ -446,15 +728,15 @@ void BigBossProcessor::loadFactoryPreset (int i)
 {
     const auto& f = presets::factory();
     if (i < 0 || i >= (int) f.size()) return;
-    applyValues (f[(size_t) i].values, true);
+    applyValues (f[(size_t) i].values, true, Apply::Preset);
     bb::Chain::Order o {};
     for (int k = 0; k < kNumSlots; ++k) o[(size_t) k] = k;
-    chain.setOrder (o);
+    setOrder (o);
     currentFactory = i;
-    presetName = f[(size_t) i].name;
+    setPresetName (f[(size_t) i].name);
 }
 
-bool BigBossProcessor::saveUserPreset (const juce::String& name)
+bool BigBossProcessor::saveUserPreset (const juce::String& name, const juce::StringArray& tags)
 {
     const auto clean = juce::File::createLegalFileName (name.trim());
     if (clean.isEmpty()) return false;
@@ -465,9 +747,19 @@ bool BigBossProcessor::saveUserPreset (const juce::String& name)
     auto xml = getXmlFromBinary (mb.getData(), (int) mb.getSize());
     if (xml == nullptr) return false;
     xml->setAttribute ("preset", clean);
+    if (! tags.isEmpty()) xml->setAttribute ("tags", tags.joinIntoString (", "));
+    xml->removeAttribute ("program");
+    xml->removeAttribute ("reference");
+    if (auto* slotsXml = xml->getChildByName ("SLOTS")) xml->removeChildElement (slotsXml, true);
+    // gain staging and the output belong to the session; a preset leaves them alone
+    for (auto* e = xml->getFirstChildElement(); e != nullptr;)
+    {
+        auto* next = e->getNextElement();
+        if (e->hasTagName ("PARAM") && sessionOnly (e->getStringAttribute ("id"))) xml->removeChildElement (e, true);
+        e = next;
+    }
     if (! xml->writeTo (dir.getChildFile (clean + presets::extension))) return false;
-    presetName = clean;
-    currentFactory = -1;
+    setPresetName (clean);
     return true;
 }
 
@@ -478,14 +770,13 @@ bool BigBossProcessor::loadUserPreset (const juce::File& file)
     presets::Values v;
     for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
         v[e->getStringAttribute ("id")] = (float) e->getDoubleAttribute ("value");
-    applyValues (v, true);
-    setOrderFromIds (xml->getStringAttribute ("order"));
-    presetName = file.getFileNameWithoutExtension();
-    currentFactory = -1;
+    applyValues (v, true, Apply::Preset);
+    setOrderFromIds (xml->getStringAttribute ("order"));   // STAY LAST, if on, keeps the limiter last
+    setPresetName (file.getFileNameWithoutExtension());
     return true;
 }
 
-void BigBossProcessor::setOrderFromIds (const juce::String& list)
+bool BigBossProcessor::setOrderFromIds (const juce::String& list, bb::Chain::Order* parsed)
 {
     // the order is saved by slot id, so adding slots in later versions keeps old sessions loading
     const auto ids = juce::StringArray::fromTokens (list, ",", "");
@@ -495,9 +786,12 @@ void BigBossProcessor::setOrderFromIds (const juce::String& list)
     for (const auto& id : ids)
         for (int s = 0; s < kNumSlots; ++s)
             if (id == kSlots[s].id && ! used[(size_t) s] && k < kNumSlots) { o[(size_t) k++] = s; used[(size_t) s] = true; }
+    if (k == 0) return false;
     for (int s = 0; s < kNumSlots; ++s)
         if (! used[(size_t) s]) o[(size_t) k++] = s;
-    chain.setOrder (o);
+    if (parsed != nullptr) *parsed = o;
+    else setOrder (o);
+    return true;
 }
 
 void BigBossProcessor::applyPlan (const bb::assist::Plan& p)
@@ -517,6 +811,7 @@ void BigBossProcessor::applyPlan (const bb::assist::Plan& p)
     v[eqLpf] = (float) p.eq.lpfHz;
     v[eqMono] = (float) p.eq.monoBassHz;
     v[eqOut] = (float) p.eq.outputDb;
+    v[eqStereo] = (float) p.eq.stereo;
 
     v[compOpto] = p.comp.opto ? 1.0f : 0.0f;
     v[compOptoThr] = (float) p.comp.optoThreshold;
@@ -556,15 +851,39 @@ void BigBossProcessor::applyPlan (const bb::assist::Plan& p)
 
     for (int s = 0; s < kNumSlots; ++s) v[bypassId (s)] = p.bypass[(size_t) s] ? 1.0f : 0.0f;
     v[inTrim] = (float) p.inTrimDb;
+    v[volume] = 0.0f;   // the plan's loudness was rendered with the fader at 0 dB
     applyValues (v, false);
-    presetName = "Assistant";
-    currentFactory = -1;
+    setPresetName ("Assistant");
 }
 
 void BigBossProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
-    state.setProperty ("preset", presetName, nullptr);
+    state.setProperty ("preset", getPresetName(), nullptr);
+    state.setProperty ("program", currentFactory.load(), nullptr);
+    if (auto t = reference()) state.setProperty ("reference", t->file.getFullPathName(), nullptr);
+    // the compare slots: the active one is what the parameters already hold
+    juce::ValueTree slots ("SLOTS");
+    slots.setProperty ("active", compareActive, nullptr);
+    for (int i = 0; i < kCompareSlots; ++i)
+    {
+        const auto& slot = compareSlots[(size_t) i];
+        if (! slot.used || i == compareActive) continue;
+        juce::ValueTree t ("SLOT");
+        t.setProperty ("index", i, nullptr);
+        juce::StringArray ids;
+        for (int k = 0; k < kNumSlots; ++k) ids.add (kSlots[slot.order[(size_t) k]].id);
+        t.setProperty ("order", ids.joinIntoString (","), nullptr);
+        for (const auto& [id, v] : slot.values)
+        {
+            juce::ValueTree param ("PARAM");
+            param.setProperty ("id", id, nullptr);
+            param.setProperty ("value", v, nullptr);
+            t.appendChild (param, nullptr);
+        }
+        slots.appendChild (t, nullptr);
+    }
+    state.appendChild (slots, nullptr);
     juce::StringArray ids;
     const auto o = chain.order();
     for (int k = 0; k < kNumSlots; ++k) ids.add (kSlots[o[(size_t) k]].id);
@@ -579,20 +898,71 @@ void BigBossProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (xml == nullptr || ! xml->hasTagName (apvts.state.getType())) return;
     auto state = juce::ValueTree::fromXml (*xml);
 
-    setOrderFromIds (state.getProperty ("order").toString());
-    presetName = state.getProperty ("preset", "Init").toString();
-    currentFactory = -1;
-
+    const auto orderIds = state.getProperty ("order").toString();
+    setPresetName (state.getProperty ("preset", "Init").toString());
+    currentFactory = juce::jlimit (0, juce::jmax (0, getNumPrograms() - 1), (int) state.getProperty ("program", 0));
     state.removeProperty ("order", nullptr);
     state.removeProperty ("preset", nullptr);
-    apvts.replaceState (state);
+    state.removeProperty ("program", nullptr);
+    const juce::File refFile (state.getProperty ("reference").toString());
+    state.removeProperty ("reference", nullptr);
+    const auto slots = state.getChildWithName ("SLOTS");
+    state.removeChild (slots, nullptr);
 
-    // replaceState only touches parameters whose stored value changed; one the host left between
-    // steps (a switch at 0.3, say) keeps that raw value unless it is set here
     presets::Values v;
     for (const auto& child : state)
         if (child.hasType ("PARAM")) v[child.getProperty ("id").toString()] = (float) child.getProperty ("value");
-    applyValues (v, false);
+    // a session from before STAY LAST keeps the order it was saved with
+    if (v.find (pid::limLast) == v.end())
+    {
+        bb::Chain::Order o {};
+        for (int k = 0; k < kNumSlots; ++k) o[(size_t) k] = k;
+        setOrderFromIds (orderIds, &o);
+        const bool last = o[(size_t) kNumSlots - 1] == limiterSlot();
+        v[pid::limLast] = last ? 1.0f : 0.0f;
+        juce::ValueTree param ("PARAM");
+        param.setProperty ("id", pid::limLast, nullptr);
+        param.setProperty ("value", v[pid::limLast], nullptr);
+        state.appendChild (param, nullptr);
+    }
+
+    apvts.replaceState (state);
+    // replaceState only touches parameters whose stored value changed; one the host left between
+    // steps (a switch at 0.3, say) keeps that raw value unless it is set here
+    applyValues (v, false, Apply::Restore);
+    // the order last, once STAY LAST has its saved value
+    if (! setOrderFromIds (orderIds))
+    {
+        bb::Chain::Order o {};
+        for (int k = 0; k < kNumSlots; ++k) o[(size_t) k] = k;
+        setOrder (o);
+    }
+
+    compareSlots = {};
+    compareActive = slots.isValid() ? juce::jlimit (0, kCompareSlots - 1, (int) slots.getProperty ("active", 0)) : 0;
+    for (const auto& t : slots)
+    {
+        const int i = t.getProperty ("index", -1);
+        if (i < 0 || i >= kCompareSlots || i == compareActive) continue;
+        auto& slot = compareSlots[(size_t) i];
+        for (const auto& param : t)
+            if (param.hasType ("PARAM")) slot.values[param.getProperty ("id").toString()] = (float) param.getProperty ("value");
+        for (int k = 0; k < kNumSlots; ++k) slot.order[(size_t) k] = k;
+        setOrderFromIds (t.getProperty ("order").toString(), &slot.order);
+        slot.used = true;
+    }
+
+    if (refFile.existsAsFile() && (reference() == nullptr || reference()->file != refFile))
+    {
+        juce::String error;
+        loadReference (refFile, error);
+    }
+
+    // a fresh undo history, starting from the session as it was saved
+    history.clear();
+    historyAt = -1;
+    editPending.store (true);
+    checkpoint();
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

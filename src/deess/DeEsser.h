@@ -37,7 +37,10 @@ public:
         bool listen = false;       // play the removed signal
     };
 
-    static double bandFreq (double lowest, int band);   // centres, half an octave apart
+    // centres, half an octave apart, kept under 16 kHz and 0.42 of the rate: a band that would land
+    // there is placed at that cap, or dropped (0) if that puts it within a quarter octave of the band
+    // below it
+    static double bandFreq (double lowest, int band, double sampleRate);
 
     void prepare (double sampleRate, int maxBlock);   // allocates
     void reset();
@@ -69,7 +72,10 @@ private:
     Biquad bodyHp, bodyLp;
     std::array<double, kBands> bandMs {}, gainDb {};
     double bodyMs = 0, detC = 0, bodyC = 0, bodyAtkC = 0, atkC = 0, glide = 0, listenW = 0;
+    std::array<bool, kBands> active {};   // false: the band doesn't fit under the cap, so it never cuts
     int lastMode = Mid;
+    bool modeFading = false;   // a mode change waits until the cuts have faded out
+    double fadeC = 0;
     std::array<std::vector<double>, 2> delay;
     std::array<std::atomic<float>, kBands> gr {};
 };

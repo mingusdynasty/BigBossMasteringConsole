@@ -18,13 +18,28 @@ void bandpass (double f, double q, double sr, double& b0, double& b1, double& b2
 }
 }
 
-double DeEsser::bandFreq (double lowest, int band) { return lowest * std::pow (std::sqrt (2.0), band); }
+double DeEsser::bandFreq (double lowest, int band, double sampleRate)
+{
+    const double cap = std::min (16000.0, 0.42 * sampleRate);
+    double below = 0;
+    for (int k = 0; k <= band; ++k)
+    {
+        const double f = lowest * std::pow (std::sqrt (2.0), k);
+        if (f <= cap) { below = f; continue; }
+        if (below > 0 && cap / below < std::pow (2.0, 0.25)) return 0.0;
+        if (k == band) return cap;
+        below = cap;
+    }
+    return below;
+}
 
 void DeEsser::design (double freq)
 {
     for (int k = 0; k < kBands; ++k)
     {
-        const double f = bandFreq (freq, k);
+        const double fk = bandFreq (freq, k, sr);
+        active[(size_t) k] = fk > 0;
+        const double f = fk > 0 ? fk : 1000.0;   // a dropped band still gets valid (unused) coefficients
         auto& d = detect[(size_t) k];
         auto& a = apply[(size_t) k];
         bandpass (f, 2.0, sr, d.b0, d.b1, d.b2, d.a1, d.a2);   // narrow, to tell the bands apart
@@ -56,6 +71,7 @@ void DeEsser::prepare (double sampleRate, int)
     bodyAtkC = smoothing (0.001, sr);
     atkC = smoothing (0.0005, sr);
     glide = smoothing (0.02, sr);
+    fadeC = smoothing (0.002, sr);   // a mode change: the cuts let go in a few ms before the switch
     designedFreq = -1;
     design (std::clamp (target.freq, 3000.0, 8000.0));
     reset();
@@ -70,7 +86,8 @@ void DeEsser::reset()
     bodyMs = 0;
     for (auto& d : delay) std::fill (d.begin(), d.end(), 0.0);
     pos = 0;
-    lastMode = target.mode;
+    lastMode = std::clamp (target.mode, 0, 2);
+    modeFading = false;
     listenW = target.listen ? 1 : 0;
     for (auto& g : gr) g.store (0);
 }
@@ -82,16 +99,13 @@ void DeEsser::process (double* l, double* r, int n)
     if (std::abs (f - designedFreq) > 1.0) design (f);   // coefficients only: the states carry on
     const double thr = std::clamp (s.thresholdDb, -30.0, 18.0), range = std::clamp (s.rangeDb, 0.0, 24.0);
     const double relC = smoothing (std::clamp (s.releaseMs, 5.0, 500.0) * 0.001, sr);
-    const int mode = std::clamp (s.mode, 0, 2);
-    if (mode != lastMode)
-    {
-        // a new signal into the cut filters: start them clean, with nothing cut, so nothing clicks
-        for (auto& b : apply) b.clear();
-        gainDb.fill (0);
-        lastMode = mode;
-    }
+    const int wantMode = std::clamp (s.mode, 0, 2);
+    // a new mode sends a new signal into the cut filters. Let the cuts fade out in the old mode first,
+    // then start the filters clean with nothing cut, so the switch never steps
+    if (wantMode != lastMode) modeFading = true;
+    int mode = lastMode;
     const double listenT = s.listen ? 1.0 : 0.0;
-    const int nd = mode == Stereo ? 2 : 1;
+    int nd = mode == Stereo ? 2 : 1;
     std::array<double, kBands> most {};
 
     for (int i = 0; i < n; ++i)
@@ -133,9 +147,10 @@ void DeEsser::process (double* l, double* r, int n)
             const double over = bandDb[(size_t) k] - 10.0 * std::log10 (ref) - thr - (loudest - bandDb[(size_t) k]);
             // soft knee (3 dB); above it the band is pulled back to the threshold, never more than range
             const double want = over <= -1.5 ? 0.0 : (over >= 1.5 ? over : (over + 1.5) * (over + 1.5) / 6.0);
-            const double t = std::min (want, range);
+            const double t = modeFading || ! active[(size_t) k] ? 0.0 : std::min (want, range);
             auto& g = gainDb[(size_t) k];
-            g += (t - g) * (t > g ? atkC : relC);
+            g += (t - g) * (t > g ? atkC : (modeFading ? fadeC : relC));
+            if (g < 1e-9) g = 0;
             most[(size_t) k] = std::max (most[(size_t) k], g);
             depth[(size_t) k] = g > 1e-9 ? 1.0 - std::exp (-g * 0.11512925464970229) : 0.0;
         }
@@ -163,6 +178,15 @@ void DeEsser::process (double* l, double* r, int n)
         // LISTEN: what is being taken out
         l[i] = ol + listenW * ((dl - ol) - ol);
         r[i] = orr + listenW * ((dr - orr) - orr);
+
+        if (modeFading && *std::max_element (gainDb.begin(), gainDb.end()) < 0.001)
+        {
+            for (auto& b : apply) b.clear();
+            gainDb.fill (0);
+            lastMode = mode = wantMode;
+            nd = mode == Stereo ? 2 : 1;
+            modeFading = false;   // the rest of the block runs in the new mode
+        }
     }
     for (int k = 0; k < kBands; ++k) gr[(size_t) k].store ((float) most[(size_t) k], std::memory_order_relaxed);
 }

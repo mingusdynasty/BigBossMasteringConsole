@@ -12,6 +12,17 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kOpRms = 0.12589254117941673;   // 0 VU: -18 dBFS RMS
 constexpr double kCoercivity[2] = { 0.40, 0.46 };   // 456-type, GP9-type (higher coercivity)
 constexpr double kReversible[3] = { 0.86, 0.93, 0.965 };   // under, nominal, over bias
+constexpr double kTiltDb[3] = { 0.8, 0.0, -1.2 };          // under-bias brightens, over-bias dulls the top
+constexpr double kCrosstalk = 0.0079432823;                 // -42 dB
+constexpr double kHissRms = 6.309573e-05;                   // -84 dBFS: 456 at 15 ips
+
+// a value at a bias position between the three settings; exact at the settings themselves
+double atBias (const double* v, double pos)
+{
+    const int i = std::clamp ((int) std::floor (pos), 0, 2);
+    const double f = pos - i;
+    return i == 2 || f <= 0 ? v[i] : v[i] + (v[i + 1] - v[i]) * f;
+}
 
 // first-order shelf (s + wz) / (s + wp) * norm, bilinear, prewarped at wz
 void shelf1 (double& b0, double& b1, double& a1, double fz, double fp, double rate, bool highShelf)
@@ -147,6 +158,9 @@ void TapeMachine::prepare (double sampleRate, int maxBlockSize)
     inGain = std::pow (10.0, target.inputDb / 20);
     outGain = std::pow (10.0, (target.outputDb - (target.link ? target.inputDb : 0.0)) / 20);
     wowAmt = target.wow;
+    xtHpC = 1 - std::exp (-2 * kPi * 100.0 / sr);
+    xtLpC = 1 - std::exp (-2 * kPi * 2000.0 / sr);
+    hissHpC = 1 - std::exp (-2 * kPi * 300.0 / sr);
     reset();
 }
 
@@ -169,8 +183,7 @@ void TapeMachine::configure (Path& p, const Settings& s)
     invert (p.recLF, p.pbLF);
 
     p.drive = driveCal[s.tape];
-    p.makeup = makeupCal[s.tape][s.bias];
-    for (auto& h : p.hyst) { h.setTape (kCoercivity[s.tape], kReversible[s.bias]); h.prepare (hr); }
+    for (auto& h : p.hyst) h.prepare (hr);
 
     // playback head: low-end roll-off, head bump with the dip below it, gap and spacing loss
     auto& b = p;
@@ -178,9 +191,17 @@ void TapeMachine::configure (Path& p, const Settings& s)
     rbj (b.bump.b0, b.bump.b1, b.bump.b2, b.bump.a1, b.bump.a2, 0, fast ? 100.0 : 50.0, 1.1, fast ? 1.0 : 1.2, sr);
     rbj (b.dip.b0, b.dip.b1, b.dip.b2, b.dip.a1, b.dip.a2, 0, fast ? 42.0 : 22.0, 1.2, -1.5, sr);
     rbj (b.gap.b0, b.gap.b1, b.gap.b2, b.gap.a1, b.gap.a2, 1, fast ? 20000.0 : 16000.0, 0.7, fast ? -0.3 : -1.0, sr);
-    // bias: under-bias brightens, over-bias dulls the top
-    const double tilt = s.bias == Under ? 0.8 : (s.bias == Over ? -1.2 : 0.0);
-    rbj (b.tilt.b0, b.tilt.b1, b.tilt.b2, b.tilt.a1, b.tilt.a2, 1, fast ? 15000.0 : 10000.0, 0.7, tilt, sr);
+    p.trimPos = -1;
+    trim (p, std::clamp (s.bias + 0.5 * std::clamp (s.biasTrim, -1.0, 1.0), 0.0, 2.0));
+}
+
+void TapeMachine::trim (Path& p, double pos)
+{
+    if (pos == p.trimPos) return;
+    p.trimPos = pos;
+    p.makeup = atBias (makeupCal[p.tape], pos);
+    for (auto& h : p.hyst) h.setTape (kCoercivity[p.tape], atBias (kReversible, pos));
+    rbj (p.tilt.b0, p.tilt.b1, p.tilt.b2, p.tilt.a1, p.tilt.a2, 1, p.speed == ips30 ? 15000.0 : 10000.0, 0.7, atBias (kTiltDb, pos), sr);
 }
 
 void TapeMachine::reset (Path& p)
@@ -201,6 +222,11 @@ void TapeMachine::reset()
     for (auto& l : line) std::fill (l.begin(), l.end(), 0.0);
     linePos = 0;
     for (int k = 0; k < 4; ++k) { phase[k] = 0.7 * k; rateDrift[k] = 1; }
+    for (int c = 0; c < 2; ++c) xtHp[c] = xtLp[c] = hissLp[c] = 0;
+    xtMix = target.crosstalk ? 1 : 0;
+    hissMix = target.hiss ? 1 : 0;
+    azNow = target.azimuthUs * 1e-6 * sr;
+    trimNow = 0.5 * std::clamp (target.biasTrim, -1.0, 1.0);
 }
 
 // ---------------------------------------------------------------- audio
@@ -266,6 +292,13 @@ void TapeMachine::process (double* l, double* r, int n)
             fading = true;
             xfade = 0;
         }
+        // bias trim: glides, block by block, and moves each path from its own switch position
+        {
+            const double want = 0.5 * std::clamp (target.biasTrim, -1.0, 1.0);
+            trimNow = std::abs (want - trimNow) < 1e-4 ? want : trimNow + (want - trimNow) * std::min (1.0, k / (0.05 * sr));
+            for (auto& p : path)
+                if (p.speed >= 0) trim (p, std::clamp (p.bias + trimNow, 0.0, 2.0));
+        }
         if (fading)
         {
             std::copy (bl, bl + k, altL.begin());
@@ -284,13 +317,36 @@ void TapeMachine::process (double* l, double* r, int n)
             if (xfade >= 1.0) { active = 1 - active; fading = false; }
         }
 
+        // crosstalk: each track picks up the other, band-limited, through the heads
+        const double xtT = target.crosstalk ? 1 : 0;
+        if (xtT > 0 || xtMix > 0)
+            for (int i = 0; i < k; ++i)
+            {
+                xtMix += (xtT - xtMix) * glide;
+                const double in[2] { bl[i], br[i] };
+                double bp[2];
+                for (int c = 0; c < 2; ++c)
+                {
+                    xtHp[c] += xtHpC * (in[c] - xtHp[c]);   // the part below 100 Hz, taken away next
+                    xtLp[c] += xtLpC * ((in[c] - xtHp[c]) - xtLp[c]);
+                    bp[c] = xtLp[c];
+                }
+                bl[i] += xtMix * kCrosstalk * bp[1];
+                br[i] += xtMix * kCrosstalk * bp[0];
+            }
+
         // transport: wow (slow, from the reels and tension) and flutter (capstan, idlers, scrape),
         // as a modulated delay common to both tracks. Depths: share of the specified 0.05% peak
         // speed deviation; each line's rate wanders a little
+        // speed deviation; each line's rate wanders a little. Azimuth error delays the right track
         static constexpr double kHz[4] = { 0.55, 1.3, 7.3, 31.0 }, kShare[4] = { 0.4, 0.25, 0.25, 0.1 };
+        const double azT = std::clamp (target.azimuthUs, 0.0, 20.0) * 1e-6 * sr;
+        const double hissT = target.hiss ? 1 : 0;
+        const double hissAmp = kHissRms * std::sqrt (12.0) * (target.tape == GP9 ? 0.794 : 1.0) * (target.speed == ips30 ? 0.794 : 1.0);
         for (int i = 0; i < k; ++i)
         {
             wowAmt += (target.wow - wowAmt) * glide;
+            azNow += (azT - azNow) * glide;
             double d = kTransportDelay;
             for (int j = 0; j < 4; ++j)
             {
@@ -301,10 +357,11 @@ void TapeMachine::process (double* l, double* r, int n)
                 if (phase[j] > 2 * kPi) phase[j] -= 2 * kPi;
                 d += wowAmt * sr * 0.0005 * kShare[j] / (2 * kPi * kHz[j]) * std::sin (phase[j]);
             }
-            const int di = (int) d;
-            const double fr = d - di;
             for (int c = 0; c < 2; ++c)
             {
+                const double dc = c == 0 ? d : d + azNow;
+                const int di = (int) dc;
+                const double fr = dc - di;
                 auto& ln = line[(size_t) c];
                 double* x = c == 0 ? bl + i : br + i;
                 ln[(size_t) linePos] = *x;
@@ -316,6 +373,15 @@ void TapeMachine::process (double* l, double* r, int n)
                 *x = ((c3 * fr + c2) * fr + c1) * fr + y1;
             }
             linePos = (linePos + 1) & lineMask;
+            hissMix += (hissT - hissMix) * glide;
+            if (hissMix > 1e-6)
+                for (int c = 0; c < 2; ++c)
+                {
+                    hissRng[c] = hissRng[c] * 1664525u + 1013904223u;
+                    const double u = ((hissRng[c] >> 8) / 16777216.0) - 0.5;
+                    hissLp[c] += hissHpC * (u - hissLp[c]);
+                    (c == 0 ? bl[i] : br[i]) += hissMix * hissAmp * (u - hissLp[c]);
+                }
             outGain += (outT - outGain) * glide;
             bl[i] *= outGain;
             br[i] *= outGain;

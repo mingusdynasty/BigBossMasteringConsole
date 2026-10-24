@@ -16,6 +16,12 @@ public:
     // fixed for a given sample rate: the chain relies on it not changing between prepare() calls
     virtual int latency() const { return 0; }
     virtual void process (double* l, double* r, int n) = 0;
+
+    // The dry signal the chain fades to when the module is bypassed: by default (false) the input
+    // delayed by latency(). A module whose path at rest isn't a plain delay in phase (an IIR
+    // oversampler) can supply its own here, so the bypass crossfade never combs. Called every block,
+    // before process(), with the same input.
+    virtual bool dry (const double* /*l*/, const double* /*r*/, double* /*outL*/, double* /*outR*/, int /*n*/) { return false; }
 };
 
 // Holds a slot open for a module that is not built yet. Passes audio straight through.

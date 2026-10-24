@@ -34,8 +34,11 @@ Panel::Knob& Panel::addKnob (const juce::String& paramId, KnobStyle style, int s
     k->slider = std::make_unique<juce::Slider> (juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox);
     k->slider->setRotaryParameters (startAngle, endAngle, true);
     k->slider->setPopupDisplayEnabled (true, true, nullptr);
-    k->slider->setTooltip (tooltip);
     if (detents) k->slider->setMouseDragSensitivity (120);   // a few clicks of travel per position
+    k->slider->setVelocityModeParameters (1.0, 1, 0.0, false);   // modifier keys mean fine, not velocity
+    k->fine = std::make_unique<FineDrag> (*k->slider, detents ? 120 : 250);
+    k->slider->setTooltip (tooltip.trimCharactersAtEnd (".")
+                           + (tooltip.contains ("Double-click") ? ". Hold Ctrl or Shift for fine moves." : ". Double-click to reset; hold Ctrl or Shift for fine moves."));
     setStyle (*k->slider, style);
     k->attachment = std::make_unique<Apvts::SliderAttachment> (state, paramId, *k->slider);
     if (auto* p = state.getParameter (paramId))
@@ -251,6 +254,9 @@ EqPanel::EqPanel (Apvts& s) : Panel (s)
     mono = &addKnob (pid::eqMono, KnobStyle::neveBlue, 36, "Mono bass: below this frequency the side signal is removed");
     out = &addKnob (pid::eqOut, KnobStyle::ureiSmall, 40, "Output level, -12 to +12 dB");
     warm = &addSwitch (pid::eqWarm, ButtonStyle::consoleKey, "WARM", "Warm: the class-A stage's low-order harmonics");
+    stereo = &addChoice (pid::eqStereo, { "ST", "MID", "SIDE" }, ButtonStyle::consoleKey, false,
+                         "Where the five bands work: both channels (ST), the mid only, or the side only. "
+                         "The filters and Warm stay stereo.");
 }
 
 void EqPanel::resized()
@@ -270,6 +276,7 @@ void EqPanel::resized()
     placeKnob (*mono, { 1088, eqY });
     placeKnob (*out, { 1148, eqY });
     warm->button->setBounds (juce::Rectangle<int> (42, 15).withCentre ({ 1148, 103 }));
+    stereo->setBounds (1006, 96, 108, 15);
 }
 
 void EqPanel::paint (juce::Graphics& g)
@@ -309,6 +316,7 @@ CompPanel::CompPanel (Apvts& s, const bb::DualCompressor& comp)
     xfmr = &addChoice (pid::compXfmr, { "NICKEL", "IRON", "STEEL" }, ButtonStyle::dbxPush, true,
                        "Output transformer: Nickel clean, Iron low 2nd harmonic, Steel low 3rd harmonic and weight");
     scHpf = &addSwitch (pid::compScHpf, ButtonStyle::dbxPush, "SC 90", "Sidechain high-pass at 90 Hz, so bass does not drive the compression");
+    link = &addSwitch (pid::compLink, ButtonStyle::dbxPush, "LINK", "Stereo link: both channels share one gain so the image holds still. Off: dual mono, each channel compressed on its own");
     vcaIn = &addSwitch (pid::compVca, ButtonStyle::dbxPush, "IN", "Discrete stage in or out");
     vcaThr = &addKnob (pid::compVcaThr, KnobStyle::dbxBlack, 52, "Discrete threshold");
     ratio = &addKnob (pid::compRatio, KnobStyle::ureiSmall, 38, "Ratio, or Flood", true);
@@ -332,8 +340,9 @@ void CompPanel::resized()
     placeKnob (*optoThr, { 250, 60 });
     placeKnob (*optoGain, { 322, 62 });
     optoMeter.setBounds (360, 18, 128, 86);
-    xfmr->setBounds (508, 16, 60, 66);
-    scHpf->button->setBounds (508, 88, 60, 18);
+    xfmr->setBounds (508, 14, 60, 54);
+    scHpf->button->setBounds (508, 72, 60, 16);
+    link->button->setBounds (508, 92, 60, 16);
     vcaIn->button->setBounds (juce::Rectangle<int> (34, 18).withCentre ({ 604, 62 }));
     placeKnob (*vcaThr, { 670, 60 });
     placeKnob (*ratio, { 748, 62 });
@@ -346,7 +355,7 @@ void CompPanel::resized()
 void CompPanel::paint (juce::Graphics& g)
 {
     paintFinish (g, compFace, Finish::brushed);
-    nameplate (g, "BB-2", "MASTERING COMPRESSOR", juce::String::fromUTF8 ("OPTICAL · DISCRETE · LINKED"), compInk);
+    nameplate (g, "BB-2", "MASTERING COMPRESSOR", juce::String::fromUTF8 ("OPTICAL · DISCRETE"), compInk);
     const auto dim = compInk.withAlpha (0.8f);
     legendOver (g, "OPTICAL", 184, compInk, 4, 60);
     legendOver (g, "THRESHOLD", 250, compInk, 4, 70);
@@ -385,6 +394,10 @@ TapePanel::TapePanel (Apvts& s, const bb::TapeMachine& machine)
     output = &addKnob (pid::tapeOut, KnobStyle::neveGrey, 50, "Playback level");
     link = &addSwitch (pid::tapeLink, ButtonStyle::ureiWhite, "LINK", "Level link: playback follows record inversely, so drive changes colour, not loudness");
     wow = &addKnob (pid::tapeWow, KnobStyle::neveGrey, 36, "Wow and flutter, as a share of the machine's measured figure");
+    biasTrim = &addKnob (pid::tapeBiasTrim, KnobStyle::neveGrey, 34, "Bias trim: up to half a step toward under (brighter, dirtier) or over (darker, cleaner)");
+    azimuth = &addKnob (pid::tapeAzimuth, KnobStyle::neveGrey, 34, "Azimuth error: the right track lags by up to 20 microseconds, so the top end thins a little in mono");
+    xtalk = &addSwitch (pid::tapeXtalk, ButtonStyle::ureiWhite, "XTALK", "Crosstalk: each track picks up the other, 100 Hz to 2 kHz, 42 dB down");
+    hiss = &addSwitch (pid::tapeHiss, ButtonStyle::ureiWhite, "HISS", "Tape hiss: about -84 dBFS on 456 at 15 ips, quieter on GP9 and at 30 ips. Follows the playback level");
     addAndMakeVisible (vuL);
     addAndMakeVisible (vuR);
 }
@@ -406,8 +419,12 @@ void TapePanel::resized()
     placeKnob (*output, { 556, 60 });
     link->button->setBounds (juce::Rectangle<int> (40, 18).withCentre ({ 510, 103 }));
     placeKnob (*wow, { 636, 62 });
-    vuL.setBounds (700, 16, 200, 90);
-    vuR.setBounds (920, 16, 200, 90);
+    placeKnob (*biasTrim, { 706, 62 });
+    placeKnob (*azimuth, { 764, 62 });
+    xtalk->button->setBounds (800, 40, 46, 18);
+    hiss->button->setBounds (800, 72, 46, 18);
+    vuL.setBounds (866, 16, 152, 90);
+    vuR.setBounds (1028, 16, 152, 90);
 }
 
 void TapePanel::paint (juce::Graphics& g)
@@ -426,7 +443,11 @@ void TapePanel::paint (juce::Graphics& g)
     scale (g, *output, level, tapeInk, 6.5f);
     legendOver (g, "WOW", 636, tapeInk, 4, 50);
     scale (g, *wow, { { 0.0f, "0" }, { 100.0f, "100" } }, tapeInk, 6.5f);
-    rule (g, 680, tapeInk);
+    legendOver (g, "TRIM", 706, tapeInk, 4, 46);
+    scale (g, *biasTrim, { { -1.0f, "U" }, { 0.0f, "0" }, { 1.0f, "O" } }, tapeInk, 6.5f);
+    legendOver (g, "AZIM", 764, tapeInk, 4, 46);
+    scale (g, *azimuth, { { 0.0f, "0" }, { 20.0f, "20" } }, tapeInk, 6.5f);
+    rule (g, 856, tapeInk);
 }
 
 // ===================================================================== de-esser
@@ -495,8 +516,8 @@ void BandLadders::paint (juce::Graphics& g)
     }
 }
 
-DeEssPanel::DeEssPanel (Apvts& s, const bb::DeEsser& d, std::function<double()> lowest)
-    : Panel (s), deesser (d), lowestBandHz (std::move (lowest))
+DeEssPanel::DeEssPanel (Apvts& s, const bb::DeEsser& d, std::function<double()> lowest, std::function<double()> rate)
+    : Panel (s), deesser (d), lowestBandHz (std::move (lowest)), sampleRate (std::move (rate))
 {
     power = &addPower (pid::bypass ("deess"));
     threshold = &addKnob (pid::deessThr, KnobStyle::neveGrey, 52, "Threshold, in dB of band energy over the voice body (300 Hz to 3 kHz)");
@@ -512,11 +533,16 @@ DeEssPanel::DeEssPanel (Apvts& s, const bb::DeEsser& d, std::function<double()> 
 void DeEssPanel::tick (float seconds)
 {
     for (int k = 0; k < bb::DeEsser::kBands; ++k) ladders.push (k, deesser.reduction (k), seconds);
-    if (lowestBandHz != nullptr)
+    if (lowestBandHz != nullptr && sampleRate != nullptr)
     {
         const auto f = lowestBandHz();
+        const auto sr = sampleRate();
         for (int k = 0; k < bb::DeEsser::kBands; ++k)
-            ladders.names[(size_t) k] = juce::String (bb::DeEsser::bandFreq (f, k) / 1000.0, 1) + "k";
+        {
+            // a band with no room below the top of the audio band is dropped
+            const auto hz = bb::DeEsser::bandFreq (f, k, sr);
+            ladders.names[(size_t) k] = hz > 0 ? juce::String (hz / 1000.0, 1) + "k" : juce::String::fromUTF8 ("\xe2\x80\x94");
+        }
     }
 }
 
@@ -627,6 +653,8 @@ LimitPanel::LimitPanel (Apvts& s, bb::Limiter& lim, std::function<bb::Limiter::S
     release = &addKnob (pid::limRelease, KnobStyle::dbxBlack, 36, "Release, 1 ms to 1 s, when AUTO is off");
     truePeak = &addSwitch (pid::limTp, ButtonStyle::dbxPush, "TRUE PK", "True-peak detection (8x reconstruction), or sample peaks only");
     link = &addKnob (pid::limLink, KnobStyle::dbxBlack, 36, "Stereo link, 0 to 100%");
+    stayLast = &addSwitch (pid::limLast, ButtonStyle::dbxPush, "LAST",
+                           "Stay last: keep the limiter at the end of the chain, whatever order the modules are dragged into");
     addAndMakeVisible (history);
     addAndMakeVisible (meter);
 }
@@ -652,6 +680,7 @@ void LimitPanel::resized()
     placeKnob (*drive, { 210, 60 });
     placeKnob (*ceiling, { 306, 60 });
     style->setBounds (356, 18, 64, 72);
+    stayLast->button->setBounds (356, 94, 64, 16);
     autoRel->button->setBounds (440, 18, 52, 18);
     placeKnob (*release, { 466, 72 });
     truePeak->button->setBounds (510, 18, 60, 18);
@@ -689,14 +718,32 @@ OutputPanel::OutputPanel (BigBossProcessor& p)
     mono = &addSwitch (pid::outMono, ButtonStyle::consoleKey, "MONO",
                        "Sum the output to mono, after the fader, to hear how the master holds up on one speaker. "
                        "It changes what is rendered too, so switch it off before you bounce.");
+    lock = &addSwitch (pid::outLock, ButtonStyle::consoleKey, "CEIL LOCK",
+                       "Ceiling lock: a last true-peak guard at the BB-L1's ceiling, after the fader and MONO, so nothing "
+                       "leaves the console above it. The lamp below lights amber while it catches, red if the output goes over.");
 
     fader.setDoubleClickReturnValue (true, 0.0);
-    fader.setTooltip ("Output volume, after the last module. Automate it for rides and fades. Double-click for 0 dB.");
+    fader.setTooltip ("Output volume, after the last module. Automate it for rides and fades. Double-click for 0 dB; hold Ctrl or Shift for fine moves.");
     fader.setMouseDragSensitivity (600);
     fader.setVelocityBasedMode (false);
+    fader.setVelocityModeParameters (1.0, 1, 0.0, false);
+    faderFine = std::make_unique<FineDrag> (fader, 600);
+    fader.setPopupDisplayEnabled (true, true, nullptr);
     if (auto* param = p.apvts.getParameter (pid::volume))
         fader.textFromValueFunction = [param] (double v) { return param->getText (param->convertTo0to1 ((float) v), 16); };
     addAndMakeVisible (fader);
+
+    // the dither's choices, in the parameter's own order (ComboBoxAttachment counts from item 1)
+    if (auto* param = dynamic_cast<juce::AudioParameterChoice*> (p.apvts.getParameter (pid::outDither)))
+        dither.addItemList (param->choices, 1);
+    ditherAttachment = std::make_unique<Apvts::ComboBoxAttachment> (p.apvts, pid::outDither, dither);
+    dither.setTooltip ("Word length of what leaves the console: dither to 24 or 16 bits (TPDF), or 16 bits noise-shaped. "
+                       "Use it when you bounce to that word length; leave it OFF for a float or 32-bit file.");
+    dither.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff0b0b0b));
+    dither.setColour (juce::ComboBox::textColourId, juce::Colour (0xffff9a3c));
+    dither.setColour (juce::ComboBox::outlineColourId, juce::Colour (0xff3a3a3a));
+    dither.setColour (juce::ComboBox::arrowColourId, juce::Colour (0xffbdbdbd));
+    addAndMakeVisible (dither);
     addAndMakeVisible (inMeter);
     addAndMakeVisible (outMeter);
 
@@ -714,8 +761,18 @@ OutputPanel::OutputPanel (BigBossProcessor& p)
     addAndMakeVisible (analyserKey);
 }
 
-void OutputPanel::tick (float)
+void OutputPanel::tick (float seconds)
 {
+    if (proc.takeOverDb() > 0.0f) overHold = 1.0f;
+    if (proc.takeLockDb() > 0.05f) lockHold = 1.0f;
+    overHold = juce::jmax (0.0f, overHold - seconds);
+    lockHold = juce::jmax (0.0f, lockHold - seconds);
+    const int lamp = overHold > 0 ? 2 : (lockHold > 0 ? 1 : 0);
+    if (lamp != shownLamp)
+    {
+        shownLamp = lamp;
+        repaint (768, 80, 124, 24);
+    }
     inMeter.tick();
     outMeter.tick();
     const auto& rd = proc.outMeters.readings;
@@ -735,7 +792,9 @@ void OutputPanel::resized()
     analyserKey.setBounds (178, 22, 92, 22);
     mono->button->setBounds (178, 52, 92, 22);
     placeKnob (*trim, { 330, 62 });
-    fader.setBounds (400, 46, 440, 44);
+    fader.setBounds (392, 46, 360, 44);
+    lock->button->setBounds (772, 18, 112, 22);
+    dither.setBounds (772, 52, 112, 20);
     inMeter.setBounds (900, 18, 196, 16);
     outMeter.setBounds (900, 42, 196, 16);
     readout.setBounds (1104, 28, 64, 22);
@@ -767,6 +826,21 @@ void OutputPanel::paint (juce::Graphics& g)
         g.drawText (label, juce::Rectangle<float> (30, 10).withCentre ({ x, track.getY() - 17.0f }), juce::Justification::centred);
     }
 
+    drawEngraved (g, "DITHER", { 772, 73, 112, 10 }, consoleInk.withAlpha (0.7f), 7.0f, true, juce::Justification::left);
+
+    // the OVER lamp
+    const auto lampAt = juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ 780.0f, 93.0f });
+    const auto lit = shownLamp == 2 ? juce::Colour (0xffe5352b) : juce::Colour (0xfff2a43a);
+    g.setColour (shownLamp > 0 ? lit : juce::Colour (0xff1a1a1a));
+    g.fillEllipse (lampAt);
+    if (shownLamp > 0)
+    {
+        g.setColour (lit.withAlpha (0.3f));
+        g.fillEllipse (lampAt.expanded (3.0f));
+    }
+    drawEngraved (g, shownLamp == 1 ? "LOCK CATCHING" : "OVER", { 790, 87, 96, 12 }, consoleInk, 7.5f, true, juce::Justification::left);
+    rule (g, 760, consoleInk);
+
     drawEngraved (g, "IN", { 866, 18, 30, 16 }, consoleInk, 8.0f, true, juce::Justification::right);
     drawEngraved (g, "OUT", { 866, 42, 30, 16 }, consoleInk, 8.0f, true, juce::Justification::right);
     drawEngraved (g, "dB", { 1104, 52, 64, 12 }, consoleInk, 7.5f, true);
@@ -796,9 +870,9 @@ void OutputPanel::paint (juce::Graphics& g)
 namespace
 {
 const auto lcdAmber = juce::Colour (0xffff9a3c), lcdBack = juce::Colour (0xff0b0b0b);
-constexpr std::array<bb::assist::Goal, 4> kGoals { bb::assist::Goal::Streaming, bb::assist::Goal::Loud, bb::assist::Goal::Club,
-                                                   bb::assist::Goal::Dynamic };
-constexpr std::array<const char*, 4> kGoalLabels { "STREAM -14", "LOUD -11", "CLUB -9", "DYNAMIC -16" };
+constexpr std::array<bb::assist::Goal, 5> kGoals { bb::assist::Goal::Streaming, bb::assist::Goal::Loud, bb::assist::Goal::Club,
+                                                   bb::assist::Goal::Dynamic, bb::assist::Goal::Reference };
+constexpr std::array<const char*, 5> kGoalLabels { "STREAM -14", "LOUD -11", "CLUB -9", "DYNAMIC -16", "MATCH REF" };
 }
 
 MasterPanel::MasterPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
@@ -816,7 +890,7 @@ MasterPanel::MasterPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
     prev.onClick = [this] { stepPreset (-1); };
     next.onClick = [this] { stepPreset (1); };
     save.onClick = [this] { savePreset(); };
-    browse.onClick = [this] { showPresetMenu(); };
+    browse.onClick = [this] { showBrowser(); };
 
     for (auto* k : { &assistantKey, &analyserKey })
     {
@@ -826,17 +900,50 @@ MasterPanel::MasterPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
     }
     assistantKey.setTooltip ("The assistant: it listens to your mix and suggests settings for a loudness goal");
     analyserKey.setTooltip ("Show the analyser in place of the modules");
+
+    for (auto* k : { &undoKey, &redoKey, &copyKey })
+    {
+        setStyle (*k, ButtonStyle::consoleKey);
+        k->setClickingTogglesState (false);
+        addAndMakeVisible (*k);
+    }
+    undoKey.setTooltip ("Undo the last change (a control, a preset, a slot, the order)");
+    redoKey.setTooltip ("Redo what UNDO took back");
+    copyKey.setTooltip ("Copy these settings to another slot: press COPY, then the slot");
+    undoKey.onClick = [this] { if (proc.undo() && onOrderChanged) onOrderChanged(); };
+    redoKey.onClick = [this] { if (proc.redo() && onOrderChanged) onOrderChanged(); };
+    copyKey.onClick = [this] { copyArmed = ! copyArmed; copyKey.setToggleState (copyArmed, juce::dontSendNotification); };
+    for (int i = 0; i < BigBossProcessor::kCompareSlots; ++i)
+    {
+        auto& k = slotKeys[(size_t) i];
+        k.setButtonText (juce::String::charToString ((juce::juce_wchar) ('A' + i)));
+        setStyle (k, ButtonStyle::consoleKey);
+        k.setClickingTogglesState (false);
+        k.setTooltip ("Compare slot " + k.getButtonText() + ": four sets of settings to switch between. "
+                      "An empty slot starts as a copy of where you are.");
+        k.onClick = [this, i]
+        {
+            if (copyArmed) { proc.copyToSlot (i); copyArmed = false; copyKey.setToggleState (false, juce::dontSendNotification); }
+            else proc.selectSlot (i);
+            if (onOrderChanged) onOrderChanged();
+        };
+        addAndMakeVisible (k);
+    }
 }
 
 void MasterPanel::resized()
 {
-    presetLcd = { 420, 14, 316, 30 };
-    prev.setBounds (744, 14, 30, 30);
-    next.setBounds (778, 14, 30, 30);
-    save.setBounds (818, 18, 60, 22);
-    browse.setBounds (884, 18, 76, 22);
-    assistantKey.setBounds (982, 18, 98, 22);
-    analyserKey.setBounds (1086, 18, 92, 22);
+    undoKey.setBounds (316, 18, 50, 22);
+    redoKey.setBounds (370, 18, 50, 22);
+    presetLcd = { 428, 14, 226, 30 };
+    prev.setBounds (660, 14, 28, 30);
+    next.setBounds (692, 14, 28, 30);
+    save.setBounds (728, 18, 52, 22);
+    browse.setBounds (784, 18, 66, 22);
+    for (int i = 0; i < BigBossProcessor::kCompareSlots; ++i) slotKeys[(size_t) i].setBounds (860 + 26 * i, 18, 24, 22);
+    copyKey.setBounds (966, 18, 46, 22);
+    assistantKey.setBounds (1030, 18, 82, 22);
+    analyserKey.setBounds (1116, 18, 70, 22);
 }
 
 void MasterPanel::stepPreset (int delta)
@@ -847,7 +954,7 @@ void MasterPanel::stepPreset (int delta)
     const int total = (int) f.size() + user.size();
     int at = proc.getCurrentProgram();
     for (int i = 0; i < user.size(); ++i)
-        if (user[i].getFileNameWithoutExtension() == proc.presetName) at = (int) f.size() + i;
+        if (user[i].getFileNameWithoutExtension() == proc.getPresetName()) at = (int) f.size() + i;
     const int to = ((at + delta) % total + total) % total;
     if (to < (int) f.size()) proc.loadFactoryPreset (to);
     else proc.loadUserPreset (user[to - (int) f.size()]);
@@ -859,15 +966,16 @@ void MasterPanel::showPresetMenu()
     juce::PopupMenu menu, factoryMenu, userMenu;
     const auto& f = presets::factory();
     for (int i = 0; i < (int) f.size(); ++i)
-        menu.addItem (1 + i, f[(size_t) i].name, true, proc.presetName == f[(size_t) i].name);
+        menu.addItem (1 + i, f[(size_t) i].name, true, proc.getPresetName() == f[(size_t) i].name);
     const auto user = presets::userPresets();
     menu.addSeparator();
     if (user.isEmpty()) menu.addItem (-1, "(no presets of your own yet: press SAVE)", false);
     for (int i = 0; i < user.size(); ++i)
-        menu.addItem (1000 + i, user[i].getFileNameWithoutExtension(), true, proc.presetName == user[i].getFileNameWithoutExtension());
+        menu.addItem (1000 + i, user[i].getFileNameWithoutExtension(), true, proc.getPresetName() == user[i].getFileNameWithoutExtension());
     menu.addSeparator();
     menu.addItem (2000, "Save as...");
     menu.addItem (2001, "Open the presets folder");
+    menu.addItem (2002, "Export recall sheet...");
     juce::Component::SafePointer<MasterPanel> safe (this);
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (localAreaToGlobal (presetLcd)),
                         [safe, user] (int r)
@@ -877,6 +985,7 @@ void MasterPanel::showPresetMenu()
                             if (r >= 1 && r < 1000) self.proc.loadFactoryPreset (r - 1);
                             else if (r >= 1000 && r < 2000) self.proc.loadUserPreset (user[r - 1000]);
                             else if (r == 2000) { self.savePreset(); return; }
+                            else if (r == 2002) { if (self.onRecallSheet) self.onRecallSheet(); return; }
                             else if (r == 2001)
                             {
                                 presets::userFolder().createDirectory();
@@ -887,11 +996,23 @@ void MasterPanel::showPresetMenu()
                         });
 }
 
+void MasterPanel::showBrowser()
+{
+    auto* top = getTopLevelComponent();
+    juce::Component::SafePointer<MasterPanel> safe (this);
+    auto content = std::make_unique<PresetBrowser> (proc, [safe] { if (safe != nullptr && safe->onOrderChanged) safe->onOrderChanged(); });
+    juce::CallOutBox::launchAsynchronously (std::move (content), top->getLocalArea (this, browse.getBounds()), top);
+}
+
 void MasterPanel::savePreset()
 {
     saveDialog = std::make_unique<juce::AlertWindow> ("Save preset", "Name it. A preset with the same name is replaced.",
                                                       juce::MessageBoxIconType::NoIcon, this);
-    saveDialog->addTextEditor ("name", proc.presetName == "Init" ? juce::String() : proc.presetName);
+    saveDialog->addTextEditor ("name", proc.getPresetName() == "Init" ? juce::String() : proc.getPresetName());
+    juce::String tags;
+    for (const auto& e : presets::all())
+        if (e.name == proc.getPresetName()) tags = e.tags.joinIntoString (", ");
+    saveDialog->addTextEditor ("tags", tags, "Tags, separated by commas (for the browser's search)");
     saveDialog->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
     saveDialog->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     juce::Component::SafePointer<MasterPanel> safe (this);
@@ -899,11 +1020,117 @@ void MasterPanel::savePreset()
     {
         if (safe == nullptr) return;
         const auto name = safe->saveDialog->getTextEditorContents ("name");
-        if (r == 1 && ! safe->proc.saveUserPreset (name))
+        auto tagList = juce::StringArray::fromTokens (safe->saveDialog->getTextEditorContents ("tags"), ",", "");
+        tagList.trim();
+        tagList.removeEmptyStrings();
+        if (r == 1 && ! safe->proc.saveUserPreset (name, tagList))
             juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Save preset",
                                                     "Couldn't save to " + presets::userFolder().getFullPathName());
         safe->saveDialog.reset();
     }), false);
+}
+
+// ===================================================================== preset browser
+
+PresetBrowser::PresetBrowser (BigBossProcessor& p, std::function<void()> loaded) : proc (p), onLoaded (std::move (loaded))
+{
+    entries = presets::all();
+    juce::StringArray tags;
+    for (const auto& e : entries) for (const auto& t : e.tags) tags.addIfNotAlreadyThere (t.toLowerCase());
+    tags.sort (true);
+    for (const auto& t : tags)
+    {
+        auto k = std::make_unique<juce::ToggleButton> (t.toUpperCase());
+        setStyle (*k, ButtonStyle::consoleKey);
+        k->setClickingTogglesState (false);
+        k->onClick = [this, t]
+        {
+            tag = tag == t ? juce::String() : t;
+            for (auto& other : tagKeys) other->setToggleState (other->getButtonText().equalsIgnoreCase (tag), juce::dontSendNotification);
+            refilter();
+        };
+        addAndMakeVisible (*k);
+        tagKeys.push_back (std::move (k));
+    }
+    search.setTextToShowWhenEmpty ("Search names and tags", juce::Colour (0xff8a8a8a));
+    search.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff0b0b0b));
+    search.setColour (juce::TextEditor::textColourId, juce::Colour (0xffff9a3c));
+    search.setColour (juce::TextEditor::outlineColourId, juce::Colour (0xff3a3a3a));
+    search.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+    search.onTextChange = [this] { refilter(); };
+    search.onReturnKey = [this] { load (0); };
+    addAndMakeVisible (search);
+    list.setModel (this);
+    list.setRowHeight (34);
+    list.setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff121212));
+    addAndMakeVisible (list);
+    refilter();
+    setSize (440, 420);
+}
+
+void PresetBrowser::refilter()
+{
+    shown.clear();
+    for (const auto& e : entries)
+        if (presets::matches (e, search.getText(), tag)) shown.push_back (e);
+    list.updateContent();
+    list.repaint();
+}
+
+void PresetBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool)
+{
+    if (row < 0 || row >= (int) shown.size()) return;
+    const auto& e = shown[(size_t) row];
+    const bool current = e.name == proc.getPresetName();
+    if (current)
+    {
+        g.setColour (juce::Colour (0xff2a2016));
+        g.fillRect (0, 0, width, height);
+    }
+    g.setColour (juce::Colour (0xffff9a3c));
+    g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    g.drawText (e.name, 10, 2, width - 90, 17, juce::Justification::centredLeft);
+    g.setColour (juce::Colour (0xff8a8a8a));
+    g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+    g.drawText (e.factoryIndex >= 0 ? "FACTORY" : "YOURS", width - 80, 2, 70, 17, juce::Justification::centredRight);
+    g.drawText (e.tags.joinIntoString (juce::String::fromUTF8 (" \xc2\xb7 ")).toUpperCase(), 10, 18, width - 20, 13, juce::Justification::centredLeft);
+    g.setColour (juce::Colour (0xff222222));
+    g.drawHorizontalLine (height - 1, 0.0f, (float) width);
+}
+
+void PresetBrowser::listBoxItemClicked (int row, const juce::MouseEvent&) { load (row); }
+
+void PresetBrowser::load (int row)
+{
+    if (row < 0 || row >= (int) shown.size()) return;
+    const auto& e = shown[(size_t) row];
+    if (e.factoryIndex >= 0) proc.loadFactoryPreset (e.factoryIndex);
+    else proc.loadUserPreset (e.file);
+    list.repaint();
+    if (onLoaded) onLoaded();
+}
+
+void PresetBrowser::resized()
+{
+    auto r = getLocalBounds().reduced (10);
+    search.setBounds (r.removeFromTop (28));
+    r.removeFromTop (8);
+    // the tags, wrapped into rows
+    int x = r.getX(), y = r.getY();
+    for (auto& k : tagKeys)
+    {
+        const int w = juce::jmax (40, (int) juce::GlyphArrangement::getStringWidth (juce::Font (juce::FontOptions (10.0f, juce::Font::bold)), k->getButtonText()) + 18);
+        if (x + w > r.getRight()) { x = r.getX(); y += 24; }
+        k->setBounds (x, y, w, 20);
+        x += w + 4;
+    }
+    r.removeFromTop (y - r.getY() + 28);
+    list.setBounds (r);
+}
+
+void PresetBrowser::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour (0xff1b1c1e));
 }
 
 juce::String MasterPanel::getTooltip()
@@ -916,10 +1143,17 @@ juce::String MasterPanel::getTooltip()
 
 void MasterPanel::tick (float)
 {
-    const bool lamp = assistantNews != nullptr && assistantNews();
-    if (proc.presetName != shownPreset || lamp != shownLamp)
+    undoKey.setAlpha (proc.canUndo() ? 1.0f : 0.4f);
+    redoKey.setAlpha (proc.canRedo() ? 1.0f : 0.4f);
+    for (int i = 0; i < BigBossProcessor::kCompareSlots; ++i)
     {
-        shownPreset = proc.presetName;
+        slotKeys[(size_t) i].setToggleState (proc.activeSlot() == i, juce::dontSendNotification);
+        slotKeys[(size_t) i].setAlpha (proc.slotUsed (i) || proc.activeSlot() == i ? 1.0f : 0.55f);
+    }
+    const bool lamp = assistantNews != nullptr && assistantNews();
+    if (proc.getPresetName() != shownPreset || lamp != shownLamp)
+    {
+        shownPreset = proc.getPresetName();
         shownLamp = lamp;
         repaint();
     }
@@ -940,7 +1174,7 @@ void MasterPanel::paint (juce::Graphics& g)
         static const auto script = juce::Typeface::createSystemTypefaceFor (BigBossFonts::YellowtailRegular_ttf,
                                                                             BigBossFonts::YellowtailRegular_ttfSize);
         const juce::String name ("Big Boss Mastering Suite");
-        const auto area = juce::Rectangle<float> (34.0f, 4.0f, 374.0f, 50.0f);
+        const auto area = juce::Rectangle<float> (34.0f, 4.0f, 274.0f, 50.0f);
         auto font = juce::Font (juce::FontOptions (script).withHeight (38.0f));
         const float w = juce::GlyphArrangement::getStringWidth (font, name);
         if (w > area.getWidth()) font = font.withHeight (38.0f * area.getWidth() / w);
@@ -978,7 +1212,7 @@ void MasterPanel::paint (juce::Graphics& g)
 
 // ===================================================================== the assistant
 
-AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
+AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p), host (p.assistant())
 {
     for (size_t i = 0; i < goalKeys.size(); ++i)
     {
@@ -987,14 +1221,15 @@ AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
         setStyle (k, ButtonStyle::consoleKey);
         k.setRadioGroupId (0x6b6f);
         k.setClickingTogglesState (true);
-        k.setToggleState (i == 0, juce::dontSendNotification);
-        k.onClick = [this, i] { if (goalKeys[i].getToggleState()) goal = kGoals[i]; };
+        k.setToggleState (kGoals[i] == host.getGoal(), juce::dontSendNotification);
+        k.onClick = [this, i] { if (goalKeys[i].getToggleState()) host.setGoal (kGoals[i]); };
         addAndMakeVisible (k);
     }
     goalKeys[0].setTooltip ("Goal: streaming services, -14 LUFS and -1 dBTP");
     goalKeys[1].setTooltip ("Goal: loud, -11 LUFS");
     goalKeys[2].setTooltip ("Goal: club and DJ play, -9 LUFS");
     goalKeys[3].setTooltip ("Goal: dynamic, -16 LUFS (Apple Music, acoustic, classical)");
+    goalKeys[4].setTooltip ("Goal: the reference track (LOAD REF in the analyser): its loudness, its tonal balance and how dense it is");
 
     for (auto* k : { &listenKey, &applyKey, &undoKey, &closeKey })
     {
@@ -1004,115 +1239,46 @@ AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
     }
     listenKey.setTooltip ("Play your mix (its loudest part is best) and press LISTEN: the assistant listens for 10 seconds, "
                           "then suggests settings for the goal");
-    applyKey.setTooltip ("Use the assistant's settings");
+    applyKey.setTooltip ("Use the assistant's settings (the fader goes to 0 dB, as the plan was measured)");
     undoKey.setTooltip ("Put back the settings from before APPLY");
     closeKey.setTooltip ("Fold the assistant away; it keeps listening or working if it was");
-    listenKey.onClick = [this] { listen(); };
-    applyKey.onClick = [this] { apply(); };
-    undoKey.onClick = [this] { undo(); };
+    listenKey.onClick = [this] { host.listen(); };
+    applyKey.onClick = [this] { host.apply(); };
+    undoKey.onClick = [this] { if (host.undo() && onOrderChanged) onOrderChanged(); };
     closeKey.onClick = [this] { if (onClose) onClose(); };
-    applyKey.setEnabled (false);
-    undoKey.setEnabled (false);
-}
-
-AssistantPanel::~AssistantPanel()
-{
-    cancel.store (true);
-    if (worker.joinable()) worker.join();
-    if (state == State::Listening) proc.cancelCapture();
 }
 
 void AssistantPanel::resized()
 {
     for (size_t i = 0; i < goalKeys.size(); ++i) goalKeys[i].setBounds (170 + 78 * (int) i, 14, 74, 22);
-    listenKey.setBounds (500, 14, 76, 22);
-    applyKey.setBounds (582, 14, 76, 22);
-    undoKey.setBounds (664, 14, 76, 22);
+    listenKey.setBounds (578, 14, 76, 22);
+    applyKey.setBounds (660, 14, 76, 22);
+    undoKey.setBounds (742, 14, 76, 22);
     closeKey.setBounds (getWidth() - 90, 14, 76, 22);
     statusLcd = { 170, 44, getWidth() - 184, 62 };
 }
 
-void AssistantPanel::listen()
+juce::String AssistantPanel::getTooltip()
 {
-    if (state == State::Listening)   // pressed again: stop
-    {
-        proc.cancelCapture();
-        state = State::Idle;
-        return;
-    }
-    if (state == State::Thinking) return;
-    plan.reset();
-    applyKey.setEnabled (false);
-    proc.startCapture();
-    state = State::Listening;
+    const auto plan = host.plan();
+    if (plan == nullptr || ! statusLcd.contains (getMouseXYRelative())) return {};
+    juce::StringArray lines;
+    for (const auto& n : plan->notes) lines.add (n);
+    return lines.joinIntoString ("\n");
 }
 
-void AssistantPanel::apply()
+void AssistantPanel::tick (float)
 {
-    if (plan == nullptr) return;
-    before = proc.currentValues();
-    beforePreset = proc.presetName;
-    beforeOrder = proc.getOrder();
-    proc.applyPlan (*plan);
-    state = State::Applied;
-    applyKey.setEnabled (false);
-    undoKey.setEnabled (true);
-}
-
-void AssistantPanel::undo()
-{
-    if (before.empty()) return;
-    proc.applyValues (before, false);
-    proc.setOrder (beforeOrder);
-    proc.presetName = beforePreset;
-    before.clear();
-    undoKey.setEnabled (false);
-    applyKey.setEnabled (plan != nullptr);
-    state = plan != nullptr ? State::Ready : State::Idle;
-    if (onOrderChanged) onOrderChanged();
-}
-
-void AssistantPanel::tick (float seconds)
-{
-    if (state == State::Listening)
-    {
-        std::vector<float> l, r;
-        double rate = 0;
-        if (proc.takeCapture (l, r, rate))
-        {
-            state = State::Thinking;
-            thinkingFor = 0;
-            cancel.store (false);
-            workerDone.store (false);
-            if (worker.joinable()) worker.join();
-            const auto g = goal;
-            const auto order = proc.assistOrder();
-            worker = std::thread ([this, l = std::move (l), r = std::move (r), rate, g, order]
-            {
-                plan = std::make_unique<bb::assist::Plan> (bb::assist::plan (l, r, rate, g, order, &cancel));
-                workerDone.store (true, std::memory_order_release);
-            });
-        }
-        else if (! proc.isCapturing())
-            state = State::Idle;   // stopped, or the host re-prepared
-    }
-    else if (state == State::Thinking)
-    {
-        thinkingFor += seconds;
-        if (workerDone.load (std::memory_order_acquire))
-        {
-            worker.join();
-            const bool ok = plan != nullptr && plan->outLufs > -100.0;
-            state = ok ? State::Ready : State::Failed;
-            applyKey.setEnabled (ok);
-        }
-    }
-    listenKey.setToggleState (state == State::Listening, juce::dontSendNotification);
+    const auto now = host.getState();
+    applyKey.setEnabled (host.canApply());
+    goalKeys[4].setAlpha (proc.reference() != nullptr ? 1.0f : 0.4f);   // it still plans (for streaming) without one
+    undoKey.setEnabled (host.canUndo());
+    listenKey.setToggleState (now == State::Listening, juce::dontSendNotification);
     for (auto* k : { &applyKey, &undoKey }) k->setAlpha (k->isEnabled() ? 1.0f : 0.4f);
     // the faceplate only redraws when something on it moves, and only while it is open
-    const bool changed = state != shownState;
-    shownState = state;
-    if (isVisible() && (changed || state == State::Listening || state == State::Thinking)) repaint();
+    const bool changed = now != shownState;
+    shownState = now;
+    if (isVisible() && (changed || host.busy())) repaint();
 }
 
 void AssistantPanel::paint (juce::Graphics& g)
@@ -1143,7 +1309,9 @@ void AssistantPanel::paint (juce::Graphics& g)
         g.drawText (s, text.removeFromTop ((int) h + 3), juce::Justification::centredLeft, true);
     };
     const auto dim = lcdAmber.withAlpha (0.6f);
-    switch (state)
+    const auto now = host.getState();
+    const auto plan = host.plan();
+    switch (now)
     {
         case State::Idle:
             line ("Not sure where to start? Pick a goal, play the loudest part of your mix and press LISTEN.");
@@ -1167,16 +1335,17 @@ void AssistantPanel::paint (juce::Graphics& g)
             break;
         }
         case State::Thinking:
-            line ("Working it out" + juce::String::repeatedString (".", 1 + (int) (thinkingFor * 3) % 3));
+            line ("Working it out" + juce::String::repeatedString (".", 1 + (int) (host.thinkingSeconds() * 3) % 3));
             line ("Measuring the mix, then trying the settings on what it heard.", 10.5f, dim);
             break;
         case State::Ready:
         case State::Applied:
         {
+            if (plan == nullptr) break;
             const auto& p = *plan;
-            line (juce::String (state == State::Applied ? "Applied: " : "Ready: ") + juce::String (p.outLufs, 1) + " LUFS, "
+            line (juce::String (now == State::Applied ? "Applied: " : "Ready: ") + juce::String (p.outLufs, 1) + " LUFS, "
                   + juce::String (p.outTruePeak, 1) + " dBTP (the mix came in at " + juce::String (p.in.integrated, 1) + " LUFS). "
-                  + (state == State::Applied ? "UNDO puts your settings back." : "Press APPLY to use it."));
+                  + (now == State::Applied ? "UNDO puts your settings back." : "Press APPLY to use it."));
             juce::StringArray notes;
             for (const auto& n : p.notes) notes.add (n);
             g.setColour (dim);
@@ -1194,7 +1363,7 @@ void AssistantPanel::paint (juce::Graphics& g)
 
 AnalyserPanel::AnalyserPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
 {
-    for (auto* k : { &freezeKey, &resetKey, &bypassKey, &inKey, &outKey })
+    for (auto* k : { &freezeKey, &resetKey, &bypassKey, &matchKey, &loadRefKey, &refKey, &inKey, &outKey })
     {
         setStyle (*k, ButtonStyle::consoleKey);
         k->setClickingTogglesState (false);
@@ -1204,6 +1373,18 @@ AnalyserPanel::AnalyserPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
     resetKey.setTooltip ("Restart integrated loudness, LRA, the peak holds and the spectrogram");
     bypassKey.setTooltip ("Bypass the whole console, trim and fader included, to compare with the untouched mix. "
                           "The meters keep running. Not saved with the session.");
+    matchKey.setTooltip ("Level-matched compare: BYPASS ALL plays the untouched mix at the console's loudness, "
+                         "so you hear what the console does, not just that it is louder");
+    loadRefKey.setTooltip ("Load a reference track (WAV, AIFF, FLAC or Ogg) to compare with: its spectrum and loudness are drawn "
+                           "over the analyser's, and REF plays it. Right-click to remove it.");
+    refKey.setTooltip ("Play the reference track instead of the console, at the console's loudness");
+    matchKey.onClick = [this] { proc.matchCompare = ! proc.matchCompare.load(); };
+    loadRefKey.onClick = [this]
+    {
+        if (juce::ModifierKeys::currentModifiers.isPopupMenu()) proc.clearReference();
+        else chooseReference();
+    };
+    refKey.onClick = [this] { if (proc.reference() != nullptr) proc.refPlay = ! proc.refPlay.load(); };
     inKey.setTooltip ("Meter the input, before the trim");
     outKey.setTooltip ("Meter the output, after the fader");
     freezeKey.onClick = [this]
@@ -1248,6 +1429,38 @@ void AnalyserPanel::reset()
     proc.outMeters.requestReset();
     spectrum.clearPeak();
     spectrogram.clear();
+    codec.reset();
+}
+
+void AnalyserPanel::chooseReference()
+{
+    chooser = std::make_unique<juce::FileChooser> ("Load a reference track", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.ogg");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this] (const juce::FileChooser& fc)
+    {
+        const auto file = fc.getResult();
+        if (file == juce::File()) return;
+        juce::String error;
+        if (! proc.loadReference (file, error))
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Reference track", error);
+    });
+}
+
+void AnalyserPanel::showReference()
+{
+    shownRefVersion = proc.refVersion.load();
+    shownRefGain = proc.referenceGainDb();
+    const auto t = proc.reference();
+    if (t == nullptr || std::abs (t->rate - spectrum.sampleRate()) > 0.5)
+    {
+        spectrum.setReference ({}, 0.0f, {});
+        refKey.setTooltip ("Load a reference track first");
+        return;
+    }
+    const juce::String label = "REF  " + t->file.getFileNameWithoutExtension() + "   " + juce::String (t->lufs, 1) + " LUFS   "
+                             + juce::String (t->truePeak, 1) + " dBTP   LRA " + juce::String (t->range, 1);
+    spectrum.setReference (t->spectrum, shownRefGain, label);
+    refKey.setTooltip ("Play " + t->file.getFileName() + " instead of the console, at the console's loudness ("
+                       + juce::String (shownRefGain, 1) + " dB)");
 }
 
 void AnalyserPanel::useSource (bool output)
@@ -1258,6 +1471,8 @@ void AnalyserPanel::useSource (bool output)
     meters.setSource (m);
     spectrum.setSource (m, shownRate);
     gonio.setSource (m);
+    codec.setSource (&proc.outMeters, shownRate);   // always the output: it is what would be encoded
+    shownRefVersion = -1;
     inKey.setToggleState (! output, juce::dontSendNotification);
     outKey.setToggleState (output, juce::dontSendNotification);
 }
@@ -1276,7 +1491,26 @@ void AnalyserPanel::tick (float)
         bypassKey.setToggleState (shownBypass, juce::dontSendNotification);
         repaint (0, 0, getWidth(), 44);
     }
+    matchKey.setToggleState (proc.matchCompare.load(), juce::dontSendNotification);
+    {
+        // with MATCH on, the key shows the gain the untouched mix gets
+        const float m = proc.matchGainDb();
+        matchKey.setButtonText (proc.matchCompare.load() ? "MATCH " + juce::String (m >= 0.0f ? "+" : "") + juce::String (m, 1) : juce::String ("MATCH"));
+    }
+    refKey.setToggleState (proc.refPlay.load(), juce::dontSendNotification);
+    refKey.setAlpha (proc.reference() != nullptr ? 1.0f : 0.4f);
+    if (proc.refVersion.load() != shownRefVersion || std::abs (proc.referenceGainDb() - shownRefGain) > 0.2f) showReference();
     if (frozen) return;
+    codec.tick();
+    {
+        juce::String note = "codec est.";
+        for (int c = 0; c < bbui::CodecPreview::kCodecs; ++c)
+        {
+            const float tp = codec.truePeakDb (c);
+            note << "   " << bbui::CodecPreview::name (c) << " " << (tp > -100.0f ? juce::String (tp, 1) : juce::String::fromUTF8 ("\xe2\x80\x94"));
+        }
+        spectrum.setNote (note + " dBTP");
+    }
     meters.tick();   // even while hidden, so the loudness history has no gap when the analyser comes back
     if (isVisible())
     {
@@ -1295,6 +1529,12 @@ void AnalyserPanel::resized()
     resetKey.setBounds (row.removeFromLeft (68));
     row.removeFromLeft (6);
     bypassKey.setBounds (row.removeFromLeft (100));
+    row.removeFromLeft (4);
+    matchKey.setBounds (row.removeFromLeft (84));
+    row.removeFromLeft (16);
+    loadRefKey.setBounds (row.removeFromLeft (76));
+    row.removeFromLeft (4);
+    refKey.setBounds (row.removeFromLeft (52));
     target.setBounds (row.removeFromRight (190).withSizeKeepingCentre (190, 24));
     row.removeFromRight (64);   // TARGET
     outKey.setBounds (row.removeFromRight (52));
@@ -1324,9 +1564,6 @@ void AnalyserPanel::paint (juce::Graphics& g)
                   juce::Justification::right);
     drawEngraved (g, "TARGET", target.getBounds().translated (-64, 0).withWidth (58).toFloat(), consoleInk, 8.0f, true,
                   juce::Justification::right);
-    if (shownBypass)
-        drawEngraved (g, "OUTPUT IS THE UNTOUCHED INPUT", bypassKey.getBounds().translated (110, 0).withWidth (220).toFloat(),
-                      juce::Colour (0xffe0533c), 8.0f, true, juce::Justification::left);
     // the screen
     g.setColour (juce::Colours::black);
     g.fillRoundedRectangle (screen.toFloat(), 6.0f);

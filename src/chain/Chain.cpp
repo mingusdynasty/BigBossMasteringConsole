@@ -103,8 +103,9 @@ void Chain::runSlot (Slot& s, double* l, double* r, int n)
     const double target = s.target.load (std::memory_order_relaxed);
     double* io[2] { l, r };
 
-    // dry path, delayed by the module's latency
-    for (int c = 0; c < 2; ++c)
+    // dry path: the module's own, or the input delayed by the module's latency
+    const bool own = s.m->dry (l, r, s.dry[0].data(), s.dry[1].data(), n);
+    for (int c = 0; c < 2 && ! own; ++c)
     {
         auto& line = s.line[(size_t) c];
         double* d = s.dry[(size_t) c].data();

@@ -14,6 +14,7 @@
 
 #include "assist/Assistant.h"
 #include "chain/Chain.h"
+#include "plugin/AssistantHost.h"
 #include "plugin/Presets.h"
 
 #include <array>
@@ -52,9 +53,23 @@ public:
     void mouseMove (const juce::MouseEvent&) override;
 
 protected:
+    // Ctrl (Cmd on a Mac) or Shift held as a drag starts: six times finer
+    struct FineDrag final : juce::MouseListener
+    {
+        FineDrag (juce::Slider& s, int pixels) : slider (s), base (pixels) { slider.addMouseListener (this, false); }
+        ~FineDrag() override { slider.removeMouseListener (this); }
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            slider.setMouseDragSensitivity (e.mods.isCommandDown() || e.mods.isShiftDown() ? base * 6 : base);
+        }
+        juce::Slider& slider;
+        int base;
+    };
+
     struct Knob
     {
         std::unique_ptr<juce::Slider> slider;
+        std::unique_ptr<FineDrag> fine;
         std::unique_ptr<Apvts::SliderAttachment> attachment;
         int size = 60;
         juce::String paramId;
@@ -113,6 +128,7 @@ private:
     std::array<Switch*, 5> shelf {};   // outer bands only
     Knob *hpf, *lpf, *mono, *out;
     Switch *hpf24, *warm;
+    ChoiceButtons* stereo;
 };
 
 class CompPanel final : public Panel
@@ -124,7 +140,7 @@ public:
     void tick (float seconds) override;
 
 private:
-    Switch *power, *optoIn, *vcaIn, *scHpf;
+    Switch *power, *optoIn, *vcaIn, *scHpf, *link;
     Knob *optoThr, *optoGain, *vcaThr, *ratio, *attack, *recovery, *vcaGain;
     ChoiceButtons* xfmr;
     VuMeter optoMeter, vcaMeter;
@@ -139,9 +155,9 @@ public:
     void tick (float seconds) override;
 
 private:
-    Switch *power, *link;
+    Switch *power, *link, *xtalk, *hiss;
     ChoiceButtons *speed, *eq, *formulation, *bias;
-    Knob *input, *output, *wow;
+    Knob *input, *output, *wow, *biasTrim, *azimuth;
     VuMeter vuL, vuR;
 };
 
@@ -160,14 +176,14 @@ private:
 class DeEssPanel final : public Panel
 {
 public:
-    DeEssPanel (Apvts&, const bb::DeEsser&, std::function<double()> lowestBandHz);
+    DeEssPanel (Apvts&, const bb::DeEsser&, std::function<double()> lowestBandHz, std::function<double()> sampleRate);
     void paint (juce::Graphics&) override;
     void resized() override;
     void tick (float seconds) override;
 
 private:
     const bb::DeEsser& deesser;
-    std::function<double()> lowestBandHz;
+    std::function<double()> lowestBandHz, sampleRate;
     Switch *power, *listen;
     Knob *threshold, *range, *freq, *release;
     ChoiceButtons* mode;
@@ -201,7 +217,7 @@ public:
 private:
     bb::Limiter& limiter;
     std::function<bb::Limiter::Settings()> settings;
-    Switch *power, *autoRel, *truePeak;
+    Switch *power, *autoRel, *truePeak, *stayLast;
     Knob *drive, *ceiling, *release, *link;
     ChoiceButtons* style;
     LimitHistory history;
@@ -212,6 +228,30 @@ private:
 // ------------------------------------------------------------------- master section
 
 inline constexpr int masterHeight = unitHeight / 2;   // BB-1 is a half-height unit
+
+// the preset browser, dropped from BROWSE: a search box (name or tag), the tags as keys, and the list
+class PresetBrowser final : public juce::Component, private juce::ListBoxModel
+{
+public:
+    PresetBrowser (BigBossProcessor&, std::function<void()> onLoaded);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+
+private:
+    int getNumRows() override { return (int) shown.size(); }
+    void paintListBoxItem (int row, juce::Graphics&, int width, int height, bool selected) override;
+    void listBoxItemClicked (int row, const juce::MouseEvent&) override;
+    void refilter();
+    void load (int row);
+
+    BigBossProcessor& proc;
+    std::function<void()> onLoaded;
+    juce::TextEditor search;
+    juce::ListBox list;
+    std::vector<presets::Entry> entries, shown;
+    std::vector<std::unique_ptr<juce::ToggleButton>> tagKeys;
+    juce::String tag;
+};
 
 // the top unit: presets (factory and the user's own), and the keys that open the assistant and the
 // analyser
@@ -226,6 +266,7 @@ public:
 
     std::function<void()> onOrderChanged;     // a preset moved the modules
     std::function<bool()> assistantNews;      // lights the lamp by ASSISTANT
+    std::function<void()> onRecallSheet;      // the preset menu's "Export recall sheet..."
     juce::ToggleButton assistantKey { "ASSISTANT" };
     juce::ToggleButton analyserKey { "ANALYSER" };   // the same switch as the output unit's
 
@@ -235,7 +276,12 @@ private:
     void savePreset();
 
     BigBossProcessor& proc;
+    void showBrowser();
+
     juce::ToggleButton prev { "<" }, next { ">" }, save { "SAVE" }, browse { "BROWSE" };
+    juce::ToggleButton undoKey { "UNDO" }, redoKey { "REDO" }, copyKey { "COPY" };
+    std::array<juce::ToggleButton, 4> slotKeys;   // BigBossProcessor::kCompareSlots
+    bool copyArmed = false;
     juce::Rectangle<int> presetLcd;
     juce::String shownPreset;
     bool shownLamp = false;
@@ -245,12 +291,13 @@ private:
 };
 
 // the assistant, which listens to the mix and sets the console up for a loudness goal: a 1U panel that
-// drops down over the rack from BB-1's ASSISTANT key, and keeps working while it is folded away
-class AssistantPanel final : public Panel
+// drops down over the rack from BB-1's ASSISTANT key. It is a view of the processor's AssistantHost, so
+// the work goes on while it is folded away or the window is closed
+class AssistantPanel final : public Panel, public juce::TooltipClient
 {
 public:
     explicit AssistantPanel (BigBossProcessor&);
-    ~AssistantPanel() override;
+    juce::String getTooltip() override;   // over the display: every note of the plan, one a line
     void paint (juce::Graphics&) override;
     void resized() override;
     void tick (float seconds) override;
@@ -258,31 +305,21 @@ public:
     static constexpr int shadow = 10;   // drawn below the faceplate, over the rack
     std::function<void()> onOrderChanged;   // undo moved the modules
     std::function<void()> onClose;
-    bool hasNews() const { return state == State::Listening || state == State::Thinking || state == State::Ready; }
+    bool hasNews() const { return host.hasNews(); }
 
     // for the snapshot tool
-    void pressListen() { listen(); }
-    bool busy() const { return state == State::Listening || state == State::Thinking; }
+    void pressListen() { host.listen(); }
+    bool busy() const { return host.busy(); }
 
 private:
-    void listen();
-    void apply();
-    void undo();
+    using State = AssistantHost::State;
 
     BigBossProcessor& proc;
+    AssistantHost& host;
     juce::ToggleButton listenKey { "LISTEN" }, applyKey { "APPLY" }, undoKey { "UNDO" }, closeKey { "CLOSE" };
-    std::array<juce::ToggleButton, 4> goalKeys;
+    std::array<juce::ToggleButton, 5> goalKeys;
     juce::Rectangle<int> statusLcd;
-
-    enum class State { Idle, Listening, Thinking, Ready, Applied, Failed } state = State::Idle, shownState = State::Idle;
-    bb::assist::Goal goal = bb::assist::Goal::Streaming;
-    std::thread worker;
-    std::atomic<bool> cancel { false }, workerDone { false };
-    std::unique_ptr<bb::assist::Plan> plan;
-    presets::Values before;   // for UNDO
-    juce::String beforePreset;
-    bb::Chain::Order beforeOrder {};
-    float thinkingFor = 0;
+    State shownState = State::Idle;
 };
 
 // ------------------------------------------------------------------- output and analyser
@@ -301,8 +338,15 @@ private:
     BigBossProcessor& proc;
     juce::Slider fader { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
     Apvts::SliderAttachment faderAttachment;
+    std::unique_ptr<FineDrag> faderFine;
     Knob* trim;
-    Switch* mono;
+    Switch *mono, *lock;
+    juce::ComboBox dither;
+    std::unique_ptr<Apvts::ComboBoxAttachment> ditherAttachment;   // made once the box has its items
+    // the OVER lamp: red while the output went over the ceiling, amber while CEILING LOCK caught it;
+    // each held a second so a single over is seen
+    float overHold = 0, lockHold = 0;
+    int shownLamp = 0;
     PeakMeter inMeter, outMeter;
     juce::Label readout;
     float shortTerm = -200, integrated = -200, truePeak = -200;
@@ -328,9 +372,17 @@ private:
     bbui::Spectrum spectrum;
     bbui::Spectrogram spectrogram;
     bbui::Goniometer gonio;
-    juce::ToggleButton freezeKey { "FREEZE" }, resetKey { "RESET" }, bypassKey { "BYPASS ALL" };
+    void chooseReference();
+    void showReference();   // after a load or a clear: the overlay, the keys
+
+    juce::ToggleButton freezeKey { "FREEZE" }, resetKey { "RESET" }, bypassKey { "BYPASS ALL" }, matchKey { "MATCH" };
+    juce::ToggleButton loadRefKey { "LOAD REF" }, refKey { "REF" };
     juce::ToggleButton inKey { "IN" }, outKey { "OUT" };
     juce::ComboBox target;
+    bbui::CodecPreview codec;
+    std::unique_ptr<juce::FileChooser> chooser;
+    int shownRefVersion = -1;
+    float shownRefGain = 0;
     bool showingOutput = true, frozen = false, shownBypass = false;
     double shownRate = 0;
     juce::Rectangle<int> screen;

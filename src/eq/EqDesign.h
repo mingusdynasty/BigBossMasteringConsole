@@ -34,6 +34,7 @@ struct Settings
     double lpfHz = 0;       // 0 = off; 12 dB/oct
     double monoBassHz = 0;  // 0 = off: the side signal is high-passed here (24 dB/oct)
     double outputDb = 0;
+    int stereo = 0;         // where the five bands work: 0 both channels, 1 mid only, 2 side only
 };
 
 constexpr double kMaxGain = 12.0;

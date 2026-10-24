@@ -23,10 +23,14 @@ double kneeReduction (double over, double knee, double slope)
     return slope * t * t / (2.0 * knee);
 }
 
-// the transformer nonlinearities, applied to the low band; each is unity-slope at zero
-inline double iron (double v)  { constexpr double k = 0.06, b = 0.35, tb = 0.33637554433, s = 0.88685; return (std::tanh (k * v + b) - tb) / (k * s); }
-inline double steel (double v) { constexpr double k = 0.62; return std::tanh (k * v) / k; }
-inline double nickel (double v) { constexpr double k = 0.2; return std::tanh (k * v) / k; }
+// the three cores (see dyn/Transformer.h). Measured at 48 kHz, a 50 Hz tone at -6 dBFS: nickel 0.12%
+// THD, iron 1.3% (mostly 2nd, from its standing field), steel 2.4% (3rd); at 1 kHz and above all three
+// stay under 0.1%
+constexpr TransformerCore::Voicing kCores[3] = {
+    { 0.6, 1.0, 0.99, 0.0 },    // Nickel: high permeability, barely driven
+    { 1.2, 1.0, 0.99, 0.2 },    // Iron: driven harder, with a standing field
+    { 2.6, 1.2, 0.98, 0.0 },    // Steel: driven hardest, a wider loop
+};
 }
 
 constexpr double DualCompressor::kRatio[];
@@ -53,19 +57,18 @@ void DualCompressor::prepare (double sampleRate, int)
 
     optoDetC = coef (0.010, sr);
     vcaDetC = coef (0.0008, sr);
-    optoAtkC = coef (0.010, sr);
     memChargeC = coef (2.0, sr);
     memDrainC = coef (4.0, sr);
     glide = coef (0.02, sr);
-    xfLowC = coef (1.0 / (2 * kPi * 150.0), sr);   // the low band the core saturates: 150 Hz one-pole
-    xfDcR = 1.0 - 2 * kPi * 5.0 / sr;
+    for (int t = 0; t < 3; ++t) cores[t].prepare (sr, kCores[t]);
     reset();
 }
 
 void DualCompressor::reset()
 {
-    for (int c = 0; c < 2; ++c) hz1[c] = hz2[c] = xfLow[c] = xfDcX[c] = xfDcY[c] = 0;
-    optoMs = vcaMs = optoGr = optoMemory = vcaGr = vcaSlow = 0;
+    for (int c = 0; c < 2; ++c) hz1[c] = hz2[c] = 0;
+    for (auto& core : cores) core.reset();
+    for (int c = 0; c < 2; ++c) optoMs[c] = vcaMs[c] = optoFast[c] = optoSlow[c] = optoMemory[c] = vcaGr[c] = vcaSlow[c] = 0;
     hpfMix = target.sidechainHpf ? 1 : 0;
     optoGainLin = target.opto ? dbToLin (target.optoGain) : 1;
     vcaGainLin = target.vca ? dbToLin (target.vcaGain) : 1;
@@ -104,54 +107,71 @@ void DualCompressor::process (double* l, double* r, int n)
             hz2[c] = hb2 * in[c] - ha2 * y;
             sc[c] = in[c] + (y - in[c]) * hpfMix;
         }
-        const double sq = std::max (sc[0] * sc[0], sc[1] * sc[1]);
+        const double sqMax = std::max (sc[0] * sc[0], sc[1] * sc[1]);
 
-        // optical stage
-        optoMs += (sq - optoMs) * optoDetC;
-        const double optoT = s.opto ? optoCurve (levelDb (optoMs), s.optoThreshold) : 0.0;
-        if (optoT > optoGr) optoGr += (optoT - optoGr) * optoAtkC;
-        else
-        {
-            // the cell lets go quickly after a burst, slowly after it has been held down
-            const double tau = s.opto ? 0.06 + 1.44 * optoMemory : 0.03;
-            optoGr += (optoT - optoGr) * (1.0 / (tau * sr));
-        }
-        if (optoGr > 1.0) optoMemory += (std::min (1.0, optoGr / 6.0) - optoMemory) * memChargeC;
-        else optoMemory -= optoMemory * memDrainC;
-        const double gOpto = dbToLin (-optoGr) * optoGainLin;
-
-        // discrete stage, fed from the optical stage's output
-        vcaMs += (sq * gOpto * gOpto - vcaMs) * vcaDetC;
-        const double vcaT = s.vca ? vcaCurve (levelDb (vcaMs), s.vcaThreshold, ratio) : 0.0;
-        if (! s.vca) vcaGr += (vcaT - vcaGr) * offC;
-        else if (vcaT > vcaGr) vcaGr += (vcaT - vcaGr) * atkC;
-        else vcaGr += (vcaT - vcaGr) * relC;
-        double gr = vcaGr;
-        if (dual && s.vca)
-        {
-            // dual recovery: a slow follower holds sustained reduction while the fast one recovers
-            vcaSlow += (vcaGr - vcaSlow) * (vcaGr > vcaSlow ? slowAtkC : slowRelC);
-            gr = std::max (vcaGr, 0.7 * vcaSlow);
-        }
-        else vcaSlow += (0.0 - vcaSlow) * offC;
-        const double g = gOpto * dbToLin (-gr) * vcaGainLin;
-        peakOpto = std::max (peakOpto, optoGr);
-        peakVca = std::max (peakVca, gr);
-
-        // output transformer: the core saturates the low band
-        double out[2];
-        for (int t = 0; t < 3; ++t) xfWeight[t] += (wT[t] - xfWeight[t]) * glide;
+        double g[2];
         for (int c = 0; c < 2; ++c)
         {
-            const double x = in[c] * g;
-            xfLow[c] += (x - xfLow[c]) * xfLowC;
-            const double v = xfLow[c];
-            const double added = xfWeight[0] * (nickel (v) - v) + xfWeight[1] * (iron (v) - v) + xfWeight[2] * (steel (v) - v);
-            // the core's asymmetry would leave a DC offset: block it below 5 Hz
-            const double dc = added - xfDcX[c] + xfDcR * xfDcY[c];
-            xfDcX[c] = added;
-            xfDcY[c] = dc;
-            out[c] = x + dc;
+            const double sq = s.link ? sqMax : sc[c] * sc[c];
+
+            // optical stage
+            optoMs[c] += (sq - optoMs[c]) * optoDetC;
+            const double optoT = s.opto ? optoCurve (levelDb (optoMs[c]), s.optoThreshold) : 0.0;
+            const double mem = optoMemory[c];
+            double& fast = optoFast[c];
+            double& slow = optoSlow[c];
+            const double share = 0.35 + 0.5 * mem;   // how much of the reduction lets go slowly
+            const double now = (1 - share) * fast + share * slow;
+            // the panel brightens faster the harder it is driven; the cell lets go quickly after a
+            // burst, slowly after it has been held down. Each part rises at the attack rate and
+            // falls at its own release rate, so the sum never steps
+            const double atk = 1.0 / (std::max (0.003, 0.010 / (1.0 + std::max (0.0, optoT - now) / 12.0)) * sr);
+            const double relFast = 1.0 / ((s.opto ? 0.06 : 0.03) * sr), relSlow = 1.0 / ((s.opto ? 0.4 + 1.1 * mem : 0.03) * sr);
+            fast += (optoT - fast) * (optoT > fast ? atk : relFast);
+            slow += (optoT - slow) * (optoT > slow ? atk : relSlow);
+            const double optoGr = (1 - share) * fast + share * slow;
+            if (optoGr > 1.0) optoMemory[c] += (std::min (1.0, optoGr / 6.0) - mem) * memChargeC;
+            else optoMemory[c] -= mem * memDrainC;
+            const double gOpto = dbToLin (-optoGr) * optoGainLin;
+
+            // discrete stage, fed from the optical stage's output
+            vcaMs[c] += (sq * gOpto * gOpto - vcaMs[c]) * vcaDetC;
+            const double vcaT = s.vca ? vcaCurve (levelDb (vcaMs[c]), s.vcaThreshold, ratio) : 0.0;
+            double& vg = vcaGr[c];
+            if (! s.vca) vg += (vcaT - vg) * offC;
+            else if (vcaT > vg) vg += (vcaT - vg) * atkC;
+            else vg += (vcaT - vg) * relC;
+            double gr = vg;
+            if (dual && s.vca)
+            {
+                // dual recovery: a slow follower holds sustained reduction while the fast one recovers
+                vcaSlow[c] += (vg - vcaSlow[c]) * (vg > vcaSlow[c] ? slowAtkC : slowRelC);
+                gr = std::max (vg, 0.7 * vcaSlow[c]);
+            }
+            else vcaSlow[c] += (0.0 - vcaSlow[c]) * offC;
+            g[c] = gOpto * dbToLin (-gr) * vcaGainLin;
+            peakOpto = std::max (peakOpto, optoGr);
+            peakVca = std::max (peakVca, gr);
+        }
+
+        // output transformer: the chosen core, crossfaded from the last when the switch moves. A core
+        // with no weight doesn't run, and starts from rest when it comes in
+        for (int t = 0; t < 3; ++t)
+        {
+            const double w0 = xfWeight[t];
+            double w = w0 + (wT[t] - w0) * glide;
+            if (w < 1e-5) w = 0; else if (w > 1 - 1e-5) w = 1;
+            if (w0 == 0 && w > 0) cores[t].reset();
+            xfWeight[t] = w;
+        }
+        double out[2];
+        for (int c = 0; c < 2; ++c)
+        {
+            const double x = in[c] * g[c];
+            double y = 0;
+            for (int t = 0; t < 3; ++t)
+                if (xfWeight[t] > 0) y += xfWeight[t] * cores[t].process (c, x);
+            out[c] = y;
         }
         l[i] = out[0];
         r[i] = out[1];
