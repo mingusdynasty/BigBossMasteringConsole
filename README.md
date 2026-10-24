@@ -8,6 +8,9 @@ The console is a rack, in the manner of the owner's Vocal Chain plugin: the half
 - **Click the lamp** at the left of a faceplate to bypass that module.
 - **Resize by dragging** the corner (or the host window's edge): the whole rack scales as one, from 50% to 200%, and keeps its shape. If a host gives the window a different shape, the rack shrinks to fit and is centred, so no unit is ever cut off. It opens at 75% (960 × 620), which fits a 1080p screen at 125% display scaling.
 - **The analyser's own keys**: **FREEZE** holds every display, **RESET** restarts integrated loudness, LRA, the peak holds and the spectrogram, and **BYPASS ALL** takes the whole console out (trim and fader too; the output is the untouched input, time-aligned) while the meters keep running, for a straight before-and-after. It fades over 10 ms, isn't saved with the session, and the output unit says ALL BYPASSED while it is on. **IN**/**OUT** pick what the analyser measures, and **TARGET** sets the reference line.
+- **MATCH** makes that before-and-after fair: BYPASS ALL then plays the untouched mix as loud as the console's output (the key shows the gain it uses, measured from short-term loudness over the last few seconds of the console being heard), so the louder side doesn't win just for being louder.
+- **LOAD REF** loads a reference track (WAV, AIFF or FLAC; right-click clears it) and **REF** plays it, looped, at the console's loudness, so you hear it level-matched against your master. Its average spectrum is drawn over the analyser's as a white line, and the session remembers the file.
+- **Codec preview**: the spectrum's title row estimates the output's true peak after an MP3 at 128 kb/s and an AAC at 256 kb/s, from the band-limiting those encoders do. It is a floor; the encoder's own noise adds a little more.
 - **The fader** sets the output level, from off to +12 dB, with IN and OUT peak meters and short-term, integrated and true-peak readouts beside it. **INPUT TRIM** sits next to it (±24 dB) and acts before the chain. **MONO** sums the output to mono after the fader (a 10 ms fade either way) to check how the master holds up on one speaker; it is a parameter, so it is saved and it affects a render: switch it off before you bounce.
 - **CEIL LOCK** (on by default) is a last true-peak guard at the limiter's ceiling, after the fader and MONO, so nothing leaves the console above the ceiling whatever the fader or the module order. Below the ceiling it does nothing. The **OVER** lamp under it lights amber while the lock is catching (pull the fader down) and red if the output goes over the ceiling with the lock off.
 - **DITHER**: OFF, 24-bit, 16-bit or 16-bit shaped. TPDF dither to that word length, last of all; the shaped setting moves the noise up toward 20 kHz, where it is hardest to hear. Use it when you bounce to that word length, and leave it OFF for a 32-bit float file.
@@ -16,13 +19,24 @@ The console is a rack, in the manner of the owner's Vocal Chain plugin: the half
 
 **Presets.** Ten factory presets (Init, Gentle Polish, Streaming Master, Loud & Punchy, Warm Tape Glue, Vocal Forward, Low End Control, Bright & Airy, Club Master, Transparent) and your own. Step through them with the arrows, or click the display or **BROWSE** for the list. **SAVE** stores every setting and the module order under a name you choose, as a `.bbpreset` file in your user app-data folder (`%APPDATA%\Big Boss Mastering Console\Presets` on Windows); the menu opens that folder. The factory presets are also the host's program list. A preset never touches INPUT TRIM, the fader, MONO, CEIL LOCK, DITHER or the limiter's LAST key: those belong to the session.
 
-**The assistant**, for when you don't know where to start. Press **ASSISTANT** on the master section and it drops down over the rack (**CLOSE** folds it away; it keeps listening or working, and a lamp by the key lights while it is busy or has a suggestion waiting). Pick a goal (**STREAM** −14 LUFS, **LOUD** −11, **CLUB** −9, **DYNAMIC** −16), play the loudest part of the mix and press **LISTEN**. It takes 10 seconds of audio (pauses don't count), then:
+**Compare and undo.** **UNDO** and **REDO** on the master section step through your changes (every knob move, preset, plan and module move; up to 100). **A B C D** are four compare slots: each holds a complete setting of the modules and their order, and clicking another slot stores where you were and goes there (an empty slot starts as a copy). **COPY**, then a slot, copies the current settings into it. The slots are saved with the session; the session-only controls are not part of them.
+
+**Finding presets.** **BROWSE** opens a list with a search box and tag keys (loud, warm, streaming, electronic and so on); every word you type has to match a name or a tag. A preset you save can carry tags of your own.
+
+**Recall sheet.** The preset menu's **Export recall sheet...** saves a PNG with the rack as it is and every setting written out, module by module, for your notes or a recall later.
+
+**Fine moves.** Hold Ctrl (Cmd on a Mac) or Shift while you drag a knob or the fader for six times finer control, and double-click to reset. The value shows while you drag.
+
+**The assistant**, for when you don't know where to start. Press **ASSISTANT** on the master section and it drops down over the rack (**CLOSE** folds it away; it keeps listening or working, and a lamp by the key lights while it is busy or has a suggestion waiting). Pick a goal (**STREAM** −14 LUFS, **LOUD** −11, **CLUB** −9, **DYNAMIC** −16, or **MATCH REF**, the reference track loaded in the analyser), play the loudest part of the mix and press **LISTEN**. It takes 10 seconds of audio (pauses don't count), then:
 
 - measures loudness, peak-to-loudness ratio, the tonal balance against a reference for mastered music (low end, low mids, mids, presence, air), how much the 5–10 kHz band dominates its loudest moments (sibilance), and how wide the bass is;
 - picks settings a mastering engineer might start from: half the EQ it would take to reach the reference (at most 3 dB, nothing under 0.75 dB), a 25 Hz high-pass and mono bass if the low end is wide, the darker or the cleaner tape, the de-esser only when "s" sounds stand out, and the compressor out if the mix is already dense;
+- with **MATCH REF**, the reference takes the place of that built-in reference: the EQ moves toward the reference's balance, the loudness goal is the reference's, and how dense the reference is sets the compression and the limiter's style;
+- listens for **resonances**, narrow peaks between 300 Hz and 8 kHz that stay put while the music moves (a held note doesn't count), and puts a gentle cut on the strongest if a middle band is free for it; the rest it names;
+- says how wide each band is, and points out highs or mids so wide they may fall apart in mono, or a top end that is almost mono;
 - renders what it heard through a private copy of the chain to check them: the compressor's thresholds move until it does 1 to 2.5 dB of work (by goal), made up so it doesn't change loudness, and the limiter's drive moves until the result lands on the goal. A mix that arrives louder than the goal is turned down at the input trim instead.
 
-The display shows the result and every change with its reason. Nothing changes until **APPLY**, and **UNDO** puts back what you had.
+The display shows the result and every change with its reason (hover over it to read them all). Nothing changes until **APPLY**, and **UNDO** puts back what you had.
 
 ![The rack](docs/screenshot.png)
 
@@ -41,8 +55,9 @@ The display shows the result and every change with its reason. Nothing changes u
 | 5 | The rack UI from Vocal Chain: 1U units, output fader, analyser unit, drag to resize | done |
 | 6 | Presets, the assistant that sets the console up for a mix; the analyser's spectrogram, FREEZE and BYPASS ALL | done |
 | 7 | Full review: the technical spec ([docs/SPEC.md](docs/SPEC.md)) and the roadmap ([docs/ROADMAP.md](docs/ROADMAP.md)) | done |
+| 8 | The roadmap's Phases A to G: safety fixes, compare tools, hardware details, the limiter bench, workflow, delivery, assistant v2 | done, except what needs Nate (below) |
 
-What comes next, in order, is in [docs/ROADMAP.md](docs/ROADMAP.md): Phase A (the safety fixes), dither and the flux-modelled transformers are done; next are level-matched compare and A/B slots, and the side-by-side test against Pro-L 2.
+Still open in [docs/ROADMAP.md](docs/ROADMAP.md): the host program check in Reaper, Pro-L 2 renders for the bench and the limiter work they lead to, AAX (needs an Avid developer account), and re-voicing the BB-5 from measurements of a museq.
 
 None of the hardware has public schematics, so the models are voiced from published specs, manuals and measurements of the units. Each module's notes will say which.
 
@@ -68,6 +83,7 @@ Five bands in the manner of the elysia museq. Each gain knob goes one way (0 to 
 | HIGH MID | 800 Hz–12 kHz | 4 kHz |
 | HIGH | 2.5–28 kHz | 12 kHz, shelf |
 
+- **ST / MID / SIDE** chooses where the five bands work: both channels, the mid only or the side only (the filters below stay stereo). Switching fades the bands to flat, changes over and fades back.
 - **HIGH-PASS** 10–300 Hz at 12 or 24 dB/oct, **LOW-PASS** 4–30 kHz at 12 dB/oct, and **MONO BASS** 40–300 Hz, which high-passes only the side signal (24 dB/oct). Each has an OFF position at the end of its travel.
 - **WARM** broadens the boosts a little and adds the class-A stage's low-order harmonics (mostly 2nd, about 0.1% at 0 VU and rising with level).
 - Everything runs oversampled to 176.4 kHz or more, so bells and shelves keep their analogue shape up to 20 kHz. Knobs glide over 20 ms; a switch fades its band to 0 dB, changes shape and fades back, so nothing clicks.
@@ -81,6 +97,8 @@ A two-track mastering recorder in the manner of the Studer A80.
 - **TAPE**: a 456-type formulation (MOL +8 dB over 0 VU) or a GP9-type (+12 dB). **BIAS**: under (hotter, brighter), nominal, or over (cleaner, darker).
 - **INPUT** sets the record level: 0 dB puts −18 dBFS RMS at 0 VU. **LINK** makes **OUTPUT** follow input inversely, so INPUT changes the drive but not the level.
 - **WOW & FLUTTER**, 0–100% of the A80's specified maximum (default 25%).
+- **TRIM** moves the bias continuously, up to half a step toward under or over.
+- The machine's other imperfections are there if you want them, and off to start: **XTALK** (each track picks up the other, 100 Hz to 2 kHz, 42 dB down), **AZIM** (azimuth error: the right track up to 20 µs late, so the top end thins a little in mono) and **HISS** (about −84 dBFS on 456 at 15 ips, quieter on GP9 and at 30 ips; it follows the playback level, so with LINK on, hitting the tape harder lowers it).
 - Signal path: record pre-emphasis, Jiles–Atherton tape hysteresis and its exact de-emphasis (all oversampled), then the playback head's response (head bump, low-end roll-off, gap loss and bias's HF tilt) and the transport. The drive is calibrated so 3% THD at 1 kHz falls at each tape's MOL; at 0 VU the 456 reads about 0.55% THD and the GP9 about 0.25%. Switch changes crossfade between two fully threaded paths over 30 ms.
 - The VU meters show record level with VU ballistics.
 
@@ -88,15 +106,16 @@ The responses are voiced from published A80 specifications and plots, not measur
 
 ## Compressor
 
-A two-stage stereo mastering compressor in the manner of the Shadow Hills Mastering Compressor. Both stages are always stereo-linked.
+A two-stage stereo mastering compressor in the manner of the Shadow Hills Mastering Compressor.
 
-- **OPTICAL**: threshold and gain. It is a gentle, wide-kneed stage, about 3:1 well above threshold, and its release depends on its history like a photocell's. It lets go of a short burst in about 60 ms, but after it has been held down for a while the release slows toward 1.5 s.
+- **OPTICAL**: threshold and gain. It is a gentle, wide-kneed stage, about 3:1 well above threshold, and it behaves like a photocell. It pulls down in about 10 ms, faster (down to 3 ms) the further it has to go, and lets go in two parts: most of a short burst's reduction goes in about 60 ms, but after the cell has been held down for a while more of it lets go slowly, over up to 1.5 s.
 - **DISCRETE**: threshold and gain. It is fed from the optical stage's output and has these selectors:
   - **RATIO**: 1.2:1, 2:1, 3:1, 4:1, 6:1 or FLOOD.
   - **ATTACK**: 0.1 to 30 ms, in six steps.
   - **RECOVERY**: 0.1 to 1.2 s, or DUAL. DUAL recovers fast from peaks and slowly from sustained compression.
 - **OUTPUT TRANSFORMER**: modelled on the core's flux, as real iron is, so loud lows round off and thicken while the mids and highs pass almost untouched, and the distortion rises about 6 dB per octave as the frequency falls. NICKEL is close to a wire (0.12% THD at 50 Hz, −6 dBFS). IRON's core is biased, so it adds mostly 2nd harmonic (1.3%). STEEL saturates hardest and adds mostly 3rd harmonic and weight (2.4%). Quiet passages stay clean on all three.
 - **SIDECHAIN HIGH-PASS** at 90 Hz, so the kick and bass do not drive the compression.
+- **LINK** (on by default): both channels share one gain, so the stereo image holds still. Off, each channel is compressed on its own (dual mono).
 - Each stage has its own gain-reduction meter.
 
 The behaviour is voiced from the unit's manual and published descriptions, not measured from one.
@@ -123,7 +142,9 @@ Measured here, with the −1 dBTP ceiling and 6 dB of reduction on a steady sine
 | Punch | 0.10% | <0.0001% | <0.0001% | <0.0001% |
 | Dense | 1.06% | 0.11% | <0.0001% | <0.0001% |
 
-True peak stays at or under the ceiling, within the meter's 0.05 dB, at every rate and style tested: on a hot programme driven 12 dB, on a 19 kHz tone, and while switching styles mid-limit. These are our own measurements; there has been no side-by-side test against Pro-L 2 here.
+True peak stays at or under the ceiling, within the meter's 0.05 dB, at every rate and style tested: on a hot programme driven 12 dB, on a 19 kHz tone, and while switching styles mid-limit. These are our own measurements.
+
+**The bench** (`bb_bench`, in `tools/bench/`) is for the side-by-side with Pro-L 2. `bb_bench render <folder>` writes a test set (1 kHz and 40 Hz sines, SMPTE and CCIF twin tones at 0 to 10 dB over the ceiling; a drum loop and a full mix, and any songs you add with `--music <folder>`, gained to land on −14, −11 and −9 LUFS) and the BB-L1's renders of it in its three styles; the folder's `README.txt` says how to render the same files through another limiter. `bb_bench compare <A> <B> --input <folder>/input --report report.md` then measures both: THD+N, 40 Hz distortion, SMPTE and CCIF IMD, transient retention, loudness at the same ceiling, and true peak after an MP3- or AAC-like band-limit. A first finding without Pro-L 2: on the bench's raw mix, TRANSPARENT stops getting louder at about −12.5 LUFS however hard it is driven, where DENSE reaches −9.
 
 ## De-esser
 
@@ -162,6 +183,7 @@ The engine is real-time safe: nothing allocates or locks on the audio thread, ga
 
 - **The host program list** (the factory presets) is checked in pluginval but not yet in Reaper: load a factory preset, tweak it, save the project and reopen it, and the tweak should still be there.
 - **CEIL LOCK adds latency** (3 ms plus 16 samples) whether it is on or off, so switching it never moves anything in time.
+- **The installer and the CLAP build** are new and not yet tried on Windows or in a CLAP host.
 
 ## Building
 
@@ -175,20 +197,24 @@ ctest --test-dir build -C Release --output-on-failure
 
 The VST3 lands in `build/BigBoss_artefacts/Release/VST3/`, next to a Standalone app.
 
+- **CLAP**: add `-DBB_BUILD_CLAP=ON` and a `.clap` is built next to them (through clap-juce-extensions, fetched at configure time).
+- **Windows installer**: with [Inno Setup 6](https://jrsoftware.org/isinfo.php) installed, build Release, then run `ISCC.exe installer\BigBoss.iss` from the repository root (add `/DBuildDir=..\your-build-folder` if it isn't `build`). The installer in `installer\Output` puts the VST3 in `C:\Program Files\Common Files\VST3` (and the CLAP in `Common Files\CLAP`, if built), so there's no copying by hand. Quit the host first.
+
 Linux needs: `libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libgl1-mesa-dev`.
 
 ### Tests
 
 - `bb_engine_tests`: K-weighting against the BS.1770 coefficient table; EBU Tech 3341 cases 1–5 (M, S and I, gating) and 15–19 (true peak); Tech 3342 cases 1–4 (LRA), all at 44.1, 48, 96 and 192 kHz; the 20 kHz true-peak accuracy; block-size independence; correlation; the chain's latency, bypass and reorder behaviour; and the tape slot's reported latency, measured by cross-correlation.
-- `bb_module_tests`: the EQ is flat when idle, its audio matches the drawn curve within 0.1 dB, boosts are broader than cuts, and the high-pass, mono bass, Warm's 2nd harmonic, click-free switching and reported latency all check out. The tape machine puts 3% THD at each tape's MOL, has unity small-signal gain, reports its true latency, distorts more on 456 than GP9 and more under-biased than over, holds more top end at 30 ips, has its head bump, keeps wow and flutter within spec, switches without clicks, and keeps level constant under Link. Each at several sample rates.
-- `bb_dynamics_tests`: the compressor's static curve, attack ordering, the optical stage's history-dependent release, the transformers (distortion falling with frequency, IRON mostly 2nd harmonic and STEEL mostly 3rd, clean when quiet, switching without a step) and the sidechain filter. The limiter's ceiling (sample and true peak) on a driven programme at 44.1, 48 and 96 kHz in every style, a 19 kHz tone, style switching under load, bit-exact transparency below the ceiling, its reported latency and stereo link. It also prints the distortion table above.
+- `bb_module_tests`: the EQ is flat when idle, its audio matches the drawn curve within 0.1 dB, boosts are broader than cuts, and the high-pass, mono bass, Warm's 2nd harmonic, click-free switching and reported latency all check out. The tape machine puts 3% THD at each tape's MOL, has unity small-signal gain, reports its true latency, distorts more on 456 than GP9 and more under-biased than over, holds more top end at 30 ips, has its head bump, keeps wow and flutter within spec, switches without clicks, and keeps level constant under Link; crosstalk sits 42 dB down, 20 µs of azimuth error costs a 15 kHz tone about 4.6 dB in mono, hiss reads about −84 dBFS on 456 and less on GP9 and at 30 ips, and the bias trim lands between the bias positions without a step. The EQ's MID and SIDE modes touch only their component and switch smoothly. Each at several sample rates.
+- `bb_dynamics_tests`: the compressor's static curve, attack ordering, the optical stage's history-dependent, two-part release and its quicker attack for bigger moves, LINK against dual mono, the transformers (distortion falling with frequency, IRON mostly 2nd harmonic and STEEL mostly 3rd, clean when quiet, switching without a step) and the sidechain filter. The limiter's ceiling (sample and true peak) on a driven programme at 44.1, 48 and 96 kHz in every style, a 19 kHz tone, style switching under load, bit-exact transparency below the ceiling, its reported latency and stereo link. It also prints the distortion table above.
 - `bb_module_tests` also checks the dither (on the word's grid, TPDF at 0.5 LSB rms, independent channels, shaped noise moved up) and that bypassing the EQ fades without a dip at 15 kHz.
 - `bb_deesser_tests`: the bands stay under the top of the audio band at 44.1 kHz and a MODE change fades without a jump. On a synthetic voice (a 180 Hz vowel with a band of noise for the "s"), the de-esser is bit-exact when idle in every mode, cuts a hot 6.4 kHz "s" by at least 4 dB in its own band and at least 3 dB less at 12.7 kHz, leaves the vowel within 0.1 dB, catches the same "s" 20 dB quieter within 1.5 dB, leaves a soft "s" alone, reports its true latency, and LISTEN is silent with nothing removed. At 44.1, 48 and 96 kHz.
 - `bb_module_tests` also reorders the full chain, every module working, on two low tones, and checks that the high-frequency residue around the switch is no more than the steady sound's (a click would show far above it).
-- `bb_assist_tests`: on synthetic mixes, the assistant lands every goal within 0.5 LU with true peak under the ceiling, compresses by 0.5 to 3.5 dB, adds air to a dull mix, cuts a muddy one at 300 Hz, brings the de-esser in for a sibilant one and leaves it out otherwise, monos wide bass, and trims a mix that is already too loud.
+- `bb_assist_tests`: on synthetic mixes, the assistant lands every goal within 0.5 LU with true peak under the ceiling, compresses by 0.5 to 3.5 dB, adds air to a dull mix, cuts a muddy one at 300 Hz, brings the de-esser in for a sibilant one and leaves it out otherwise, monos wide bass, and trims a mix that is already too loud. It finds a resonance put into the mix and cuts it (and finds none in the plain mix), calls out wide highs, and with MATCH REF lands on the reference's loudness with its brightness and limiter style, falling back to streaming when no reference is loaded.
 - `bb_fuzz [seconds]`: random rates, block sizes, extreme signals, bypass and order changes, and random EQ, compressor, tape, de-esser and limiter settings through the chain and both meter suites; fails on any non-finite value.
+- `bb_bench selftest`: the bench's measurements against signals with known answers, then a quick render and compare.
 - pluginval at strictness 10: `pluginval --strictness-level 10 --validate-in-process "build/BigBoss_artefacts/Release/VST3/Big Boss Mastering Console.vst3"` (on Linux, under `xvfb-run -a`).
-- `bb_plugin_tests` (built with the plugin, run by ctest; turn off with `-DBB_BUILD_PLUGIN_TESTS=OFF`): **BYPASS ALL** passes the input bit-exact and time-aligned, switches in and out without a click, and the console comes back; the host's bypass is time-aligned from its first sample; **MONO** makes both sides identical, switches without a click, and stereo comes back. A session comes back exactly (every parameter, the order, the preset name and the host program) without making undo steps, and an old session keeps its order. LAST keeps the limiter last. Presets leave the trim, fader, MONO and output settings alone, saving and loading. **CEIL LOCK** holds −1 dBTP with the fader at +3 dB and the limiter first, and the OVER lamp reports the overshoot with it off. The rack follows an order change from the host. The assistant finishes and applies with the window closed. And every factory preset is rendered on a fixed test mix and checked against `tests/golden/presets.txt` (loudness, true peak, six band levels); after a deliberate change to the sound, rewrite it with `bb_plugin_tests tests/golden/presets.txt --write`.
+- `bb_plugin_tests` (built with the plugin, run by ctest; turn off with `-DBB_BUILD_PLUGIN_TESTS=OFF`): **BYPASS ALL** passes the input bit-exact and time-aligned, switches in and out without a click, and the console comes back; the host's bypass is time-aligned from its first sample; **MONO** makes both sides identical, switches without a click, and stereo comes back. A session comes back exactly (every parameter, the order, the preset name and the host program) without making undo steps, and an old session keeps its order. LAST keeps the limiter last. Presets leave the trim, fader, MONO and output settings alone, saving and loading. **CEIL LOCK** holds −1 dBTP with the fader at +3 dB and the limiter first, and the OVER lamp reports the overshoot with it off. The rack follows an order change from the host. The assistant finishes and applies with the window closed. MATCH plays the bypassed mix within 1 LU of the console; a reference track loads, is resampled and measured, plays level-matched, comes back with the session and clears; the A/B/C/D slots, undo and redo, preset search, the codec preview and the recall sheet each have a check. And every factory preset is rendered on a fixed test mix and checked against `tests/golden/presets.txt` (loudness, true peak, six band levels); after a deliberate change to the sound, rewrite it with `bb_plugin_tests tests/golden/presets.txt --write`.
 - `-DBB_BUILD_SNAPSHOT=ON` builds `bb_snapshot out.png [seconds]`, which runs a synthetic mix through the console and renders the rack, the assistant open, the analyser and the rack in an odd-shaped window to PNGs (`out.png`, `out-assistant.png`, `out-analyser.png` and `out-fit.png`; the screenshots above).
 
 GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand**: Actions → Build → Run workflow (Windows, or all platforms). It never runs on push or on pull requests.
@@ -205,9 +231,10 @@ GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand*
 | `src/dyn/` | `DualCompressor`, its `TransformerCore`s, and `Limiter`. No JUCE |
 | `src/deess/` | `DeEsser`. No JUCE |
 | `src/dsp/` | Shared with mingusdynasty/chocolatefudgeverb, copied at `6edfcdc` (namespace `cf`): the Jiles–Atherton tape hysteresis and half-band filters (the rest of that folder isn't used here, so it isn't copied). Keep changes in step with that repo. `Oversampler` and `Dither` are ours |
-| `src/plugin/` | JUCE processor and editor; `AssistantHost` (the assistant's capture, worker, plan and undo, owned by the processor); `Params` (parameter ids and ranges); `Presets` (the factory set and the user folder); `ui/` holds the analyser's colours, meter panel, spectrum, spectrogram and goniometer; `rack/` holds the rack: `RackLookAndFeel`, `KnobRenderer` and `Widgets` (ported from mingusdynasty's Vocal Chain, namespace `kit`) and `Panels` (one faceplate per module, the master section, the assistant pop-up, the output unit and the analyser unit) |
+| `src/plugin/` | JUCE processor and editor; `AssistantHost` (the assistant's capture, worker, plan and undo, owned by the processor); `Reference` (the reference track: loading, resampling, measuring); `Params` (parameter ids and ranges); `Presets` (the factory set and the user folder); `ui/` holds the analyser's colours, meter panel, spectrum, spectrogram and goniometer; `rack/` holds the rack: `RackLookAndFeel`, `KnobRenderer` and `Widgets` (ported from mingusdynasty's Vocal Chain, namespace `kit`) and `Panels` (one faceplate per module, the master section, the assistant pop-up, the output unit and the analyser unit) |
 | `resources/fonts/` | Barlow, under the SIL Open Font License (`OFL-barlow.txt`); Yellowtail (the name on the master section, by Astigmatic), under the Apache License 2.0 (`LICENSE-yellowtail.txt`) |
 | `docs/` | `SPEC.md` (signal flow, latency, CPU, every parameter, saved formats, threads, tests), `ROADMAP.md`, the screenshots |
-| `tests/`, `tools/snapshot/` | Engine and plugin tests, fuzzer, UI snapshot tool |
+| `tests/`, `tools/snapshot/`, `tools/bench/` | Engine and plugin tests, fuzzer, UI snapshot tool, the limiter bench |
+| `installer/` | The Inno Setup script for Windows |
 
 Personal use. JUCE is AGPLv3 unless you hold a commercial licence.

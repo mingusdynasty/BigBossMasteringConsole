@@ -17,6 +17,9 @@ static constexpr double kPi = 3.14159265358979323846;
 struct Mix
 {
     double dull = 0, mud = 0, sibilance = 0, wideBass = 0;   // how much of each problem, 0 .. 1
+    double resonanceHz = 0;                                    // a +9 dB, Q 8 peak over the whole mix there
+    double wideTop = 0;                                        // hats panned apart, 0 .. 1
+    double bed = 0;                                            // a quiet noise bed under it all (room, reverb), 0 .. 1
 };
 
 // a 120 bpm loop: kick, bass, a pad of harmonics, hats, a vocal-ish tone with "s" bursts
@@ -27,10 +30,21 @@ static void make (const Mix& m, double sr, double secs, std::vector<float>& l, s
     r.assign (n, 0.0f);
     std::mt19937 rng (7);
     std::normal_distribution<double> noise (0, 1);
-    double lp = 0, hpState = 0, prev = 0, s1 = 0, s2 = 0;
+    double lp = 0, hpState = 0, prev = 0, s1 = 0, s2 = 0, bedLp = 0;
     // a resonator at 7 kHz for the "s" sounds
     const double rr = 0.97, w = 2 * kPi * 7000 / sr, ra1 = -2 * rr * std::cos (w), ra2 = rr * rr;
     const double beat = 0.5;
+    // the resonance: an RBJ peaking filter
+    struct Peak
+    {
+        double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+        double run (double x) { const double y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return y; }
+    } res;
+    if (m.resonanceHz > 0)
+    {
+        const double A = std::pow (10.0, 9.0 / 40), wr = 2 * kPi * m.resonanceHz / sr, al = std::sin (wr) / (2 * 8.0), a0 = 1 + al / A;
+        res.b0 = (1 + al * A) / a0; res.b1 = -2 * std::cos (wr) / a0; res.b2 = (1 - al * A) / a0; res.a1 = res.b1; res.a2 = (1 - al / A) / a0;
+    }
     for (size_t i = 0; i < n; ++i)
     {
         const double t = (double) i / sr, inBeat = std::fmod (t, beat), inBar = std::fmod (t, 4 * beat);
@@ -51,21 +65,29 @@ static void make (const Mix& m, double sr, double secs, std::vector<float>& l, s
         s2 = s1;
         s1 = s0;
         const double sib = inBar > 1.0 && inBar < 1.08 ? m.sibilance * 0.05 * s0 : 0.0;
-        double mono = kick + bass + pad + mud + hat + voice + sib;
+        bedLp += 0.08 * (noise (rng) - bedLp);
+        double mono = kick + bass + pad + mud + hat + voice + sib + m.bed * 0.05 * bedLp;
         // a dull mix: a gentle low-pass over everything
         lp += (m.dull > 0 ? 0.12 : 1.0) * (mono - lp);
         mono = lp;
-        const double side = m.wideBass * 0.25 * std::sin (2 * kPi * 55 * t + 1.3) + 0.03 * std::sin (2 * kPi * 440 * t);
+        if (m.resonanceHz > 0) mono = res.run (mono);
+        const double side = m.wideBass * 0.25 * std::sin (2 * kPi * 55 * t + 1.3) + 0.03 * std::sin (2 * kPi * 440 * t) + m.wideTop * hat;
         l[i] = (float) (0.5 * (mono + side));
         r[i] = (float) (0.5 * (mono - side));
     }
 }
 
-static bb::assist::Plan run (const Mix& m, bb::assist::Goal g, double sr = 48000)
+static bb::assist::Plan run (const Mix& m, bb::assist::Goal g, double sr = 48000, const bb::assist::Profile* reference = nullptr)
 {
     std::vector<float> l, r;
     make (m, sr, 8.0, l, r);
-    return bb::assist::plan (l, r, sr, g, { 0, 1, 2, 3, 4 });
+    return bb::assist::plan (l, r, sr, g, { 0, 1, 2, 3, 4 }, nullptr, reference);
+}
+
+static bool said (const bb::assist::Plan& p, const char* what)
+{
+    for (const auto& n : p.notes) if (n.find (what) != std::string::npos) return true;
+    return false;
 }
 
 static double eqMove (const bb::assist::Plan& p, int band) { const auto& b = p.eq.band[band]; return b.cut ? -b.gain : b.gain; }
@@ -112,6 +134,53 @@ int main()
         const auto p = bb::assist::plan (l, r, 44100, Goal::Dynamic, { 0, 1, 2, 3, 4 });
         CHECK (p.inTrimDb < 0 && std::abs (p.outLufs + 16) < 0.5, "hot mix: trim %.1f, out %.2f LUFS", p.inTrimDb, p.outLufs);
         std::printf ("hot: in %.1f LUFS, trim %.1f, drive %.1f -> %.2f LUFS\n", p.in.integrated, p.inTrimDb, p.limit.driveDb, p.outLufs);
+    }
+
+    {   // resonances: a fixed peak is found and cut on a free band; the plain mix's held notes are not resonances
+        Mix bedded;
+        bedded.bed = 1;
+        const auto plain = run (bedded, Goal::Streaming);
+        double strongest = 0;
+        for (const auto& res : plain.in.resonances) strongest = std::max (strongest, res.db);
+        CHECK (strongest < 4.0, "resonance: the plain mix shows none of 4 dB or more (strongest %.1f dB)", strongest);
+        Mix m;
+        m.bed = 1;
+        m.resonanceHz = 630;
+        const auto p = run (m, Goal::Streaming);
+        const bool found = ! p.in.resonances.empty() && std::abs (p.in.resonances[0].hz / 630 - 1) < 0.05 && p.in.resonances[0].db >= 4.0;
+        CHECK (found, "resonance: a 9 dB peak at 630 Hz reads %.0f Hz, %.1f dB", p.in.resonances.empty() ? 0.0 : p.in.resonances[0].hz,
+               p.in.resonances.empty() ? 0.0 : p.in.resonances[0].db);
+        bool cut = false;
+        for (int b = 1; b <= 3; ++b) cut = cut || (p.eq.band[b].cut && p.eq.band[b].gain >= 1.5 && std::abs (p.eq.band[b].freq / 630 - 1) < 0.05);
+        CHECK (cut && said (p, "resonance"), "resonance: a cut goes on a free band at 630 Hz");
+    }
+
+    {   // stereo advice: hats panned hard apart make the highs wide
+        Mix m;
+        m.wideTop = 1.0;
+        const auto p = run (m, Goal::Streaming);
+        CHECK (said (p, "highs are very wide") || said (p, "upper mids are very wide"), "stereo: wide hats are pointed out (highs %.1f dB)", p.in.width[3]);
+        CHECK (! said (run ({}, Goal::Streaming), "very wide"), "stereo: the plain mix is not called wide");
+    }
+
+    {   // MATCH REF: loudness and tone follow the reference
+        std::vector<float> l, r;
+        Mix bright;
+        make (bright, 48000, 8.0, l, r);
+        // the reference: the plain mix, mastered loud and bright by its own assistant plan's numbers
+        // stand-in: the profile of a louder, brighter copy
+        for (size_t i = 0; i < l.size(); ++i) { l[i] *= 1.6f; r[i] *= 1.6f; }
+        auto ref = bb::assist::analyse (l, r, 48000);
+        ref.integrated = -10.0;
+        ref.air += 4.0;
+        Mix dull;
+        dull.dull = 0.0;
+        const auto p = run (dull, Goal::Reference, 48000, &ref);
+        CHECK (std::abs (p.outLufs + 10.0) < 0.5, "match ref: lands at %.2f LUFS for a -10 LUFS reference", p.outLufs);
+        CHECK (eqMove (p, 4) >= 1.0, "match ref: a brighter reference brings an air boost (%.1f dB)", eqMove (p, 4));
+        CHECK (p.limit.style == bb::Limiter::Dense, "match ref: a -10 LUFS reference picks the dense limiter");
+        const auto none = run ({}, Goal::Reference);
+        CHECK (std::abs (none.outLufs + 14.0) < 0.5 && said (none, "No reference"), "match ref without a reference plans for streaming");
     }
 
     std::printf ("%d checks, %d failures\n", checks, failures);

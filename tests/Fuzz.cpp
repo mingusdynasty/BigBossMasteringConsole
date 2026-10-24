@@ -78,6 +78,7 @@ int main (int argc, char** argv)
                 auto& t = tape->settings;
                 t.speed = (int) (rng() % 2); t.standard = (int) (rng() % 2); t.tape = (int) (rng() % 2); t.bias = (int) (rng() % 3);
                 t.inputDb = 12 * u (rng); t.outputDb = 12 * u (rng); t.wow = 0.5 + 0.5 * u (rng); t.link = rng() & 1;
+                t.crosstalk = rng() & 1; t.azimuthUs = 10 + 10 * u (rng); t.hiss = rng() & 1; t.biasTrim = u (rng);
             }
             if (rng() % 10 == 0)
             {
@@ -99,7 +100,7 @@ int main (int argc, char** argv)
                 c.opto = rng() & 1; c.optoThreshold = -20 + 20 * u (rng); c.optoGain = 6 + 6 * u (rng);
                 c.vca = rng() & 1; c.vcaThreshold = -20 + 20 * u (rng); c.vcaGain = 6 + 6 * u (rng);
                 c.ratio = (int) (rng() % 6); c.attack = (int) (rng() % 6); c.recovery = (int) (rng() % 6);
-                c.transformer = (int) (rng() % 3); c.sidechainHpf = rng() & 1;
+                c.transformer = (int) (rng() % 3); c.sidechainHpf = rng() & 1; c.link = rng() & 1;
             }
             if (rng() % 10 == 0)
             {

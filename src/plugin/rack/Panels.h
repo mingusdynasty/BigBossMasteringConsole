@@ -293,10 +293,11 @@ private:
 // the assistant, which listens to the mix and sets the console up for a loudness goal: a 1U panel that
 // drops down over the rack from BB-1's ASSISTANT key. It is a view of the processor's AssistantHost, so
 // the work goes on while it is folded away or the window is closed
-class AssistantPanel final : public Panel
+class AssistantPanel final : public Panel, public juce::TooltipClient
 {
 public:
     explicit AssistantPanel (BigBossProcessor&);
+    juce::String getTooltip() override;   // over the display: every note of the plan, one a line
     void paint (juce::Graphics&) override;
     void resized() override;
     void tick (float seconds) override;
@@ -316,7 +317,7 @@ private:
     BigBossProcessor& proc;
     AssistantHost& host;
     juce::ToggleButton listenKey { "LISTEN" }, applyKey { "APPLY" }, undoKey { "UNDO" }, closeKey { "CLOSE" };
-    std::array<juce::ToggleButton, 4> goalKeys;
+    std::array<juce::ToggleButton, 5> goalKeys;
     juce::Rectangle<int> statusLcd;
     State shownState = State::Idle;
 };

@@ -870,9 +870,9 @@ void OutputPanel::paint (juce::Graphics& g)
 namespace
 {
 const auto lcdAmber = juce::Colour (0xffff9a3c), lcdBack = juce::Colour (0xff0b0b0b);
-constexpr std::array<bb::assist::Goal, 4> kGoals { bb::assist::Goal::Streaming, bb::assist::Goal::Loud, bb::assist::Goal::Club,
-                                                   bb::assist::Goal::Dynamic };
-constexpr std::array<const char*, 4> kGoalLabels { "STREAM -14", "LOUD -11", "CLUB -9", "DYNAMIC -16" };
+constexpr std::array<bb::assist::Goal, 5> kGoals { bb::assist::Goal::Streaming, bb::assist::Goal::Loud, bb::assist::Goal::Club,
+                                                   bb::assist::Goal::Dynamic, bb::assist::Goal::Reference };
+constexpr std::array<const char*, 5> kGoalLabels { "STREAM -14", "LOUD -11", "CLUB -9", "DYNAMIC -16", "MATCH REF" };
 }
 
 MasterPanel::MasterPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
@@ -1229,6 +1229,7 @@ AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
     goalKeys[1].setTooltip ("Goal: loud, -11 LUFS");
     goalKeys[2].setTooltip ("Goal: club and DJ play, -9 LUFS");
     goalKeys[3].setTooltip ("Goal: dynamic, -16 LUFS (Apple Music, acoustic, classical)");
+    goalKeys[4].setTooltip ("Goal: the reference track (LOAD REF in the analyser): its loudness, its tonal balance and how dense it is");
 
     for (auto* k : { &listenKey, &applyKey, &undoKey, &closeKey })
     {
@@ -1250,17 +1251,27 @@ AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
 void AssistantPanel::resized()
 {
     for (size_t i = 0; i < goalKeys.size(); ++i) goalKeys[i].setBounds (170 + 78 * (int) i, 14, 74, 22);
-    listenKey.setBounds (500, 14, 76, 22);
-    applyKey.setBounds (582, 14, 76, 22);
-    undoKey.setBounds (664, 14, 76, 22);
+    listenKey.setBounds (578, 14, 76, 22);
+    applyKey.setBounds (660, 14, 76, 22);
+    undoKey.setBounds (742, 14, 76, 22);
     closeKey.setBounds (getWidth() - 90, 14, 76, 22);
     statusLcd = { 170, 44, getWidth() - 184, 62 };
+}
+
+juce::String AssistantPanel::getTooltip()
+{
+    const auto plan = host.plan();
+    if (plan == nullptr || ! statusLcd.contains (getMouseXYRelative())) return {};
+    juce::StringArray lines;
+    for (const auto& n : plan->notes) lines.add (n);
+    return lines.joinIntoString ("\n");
 }
 
 void AssistantPanel::tick (float)
 {
     const auto now = host.getState();
     applyKey.setEnabled (host.canApply());
+    goalKeys[4].setAlpha (proc.reference() != nullptr ? 1.0f : 0.4f);   // it still plans (for streaming) without one
     undoKey.setEnabled (host.canUndo());
     listenKey.setToggleState (now == State::Listening, juce::dontSendNotification);
     for (auto* k : { &applyKey, &undoKey }) k->setAlpha (k->isEnabled() ? 1.0f : 0.4f);

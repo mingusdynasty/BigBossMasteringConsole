@@ -12,6 +12,7 @@ option(BB_BUILD_PLUGIN "Build the JUCE plugin" ON)
 option(BB_BUILD_TESTS  "Build the engine tests and fuzzer" ON)
 option(BB_BUILD_SNAPSHOT "Build the UI snapshot tool (renders the console to a PNG)" OFF)
 option(BB_BUILD_PLUGIN_TESTS "Build the plugin tests (processor, state, presets, editor)" ON)
+option(BB_BUILD_CLAP "Also build a CLAP plugin (fetches clap-juce-extensions)" OFF)
 
 # ---------------------------------------------------------------- engine (no JUCE dependency)
 # src/dsp is shared with mingusdynasty/chocolatefudgeverb (namespace cf); keep it in step with that repo.
@@ -48,6 +49,11 @@ if(BB_BUILD_TESTS)
     add_executable(bb_fuzz tests/Fuzz.cpp)
     target_link_libraries(bb_fuzz PRIVATE bb_engine)
     add_test(NAME fuzz COMMAND bb_fuzz 0.25)
+
+    # the limiter bench (tools/bench): renders the test set and compares limiters' renders
+    add_executable(bb_bench tools/bench/Bench.cpp)
+    target_link_libraries(bb_bench PRIVATE bb_engine)
+    add_test(NAME bench COMMAND bb_bench selftest)
 endif()
 
 # ---------------------------------------------------------------- plugin
@@ -114,6 +120,18 @@ if(BB_BUILD_PLUGIN)
             juce::juce_recommended_config_flags
             juce::juce_recommended_lto_flags
             juce::juce_recommended_warning_flags)
+
+    # CLAP, through clap-juce-extensions: the same processor and editor, as Big Boss Mastering Console.clap
+    if(BB_BUILD_CLAP)
+        FetchContent_Declare(clap-juce-extensions
+            GIT_REPOSITORY https://github.com/free-audio/clap-juce-extensions.git
+            GIT_TAG        7adee3a1bd4684d4caa5601100e364abccff4b4d   # main, 2026: 0.26.0 predates JUCE 8.0.15's module split
+            GIT_SUBMODULES_RECURSE TRUE)
+        FetchContent_MakeAvailable(clap-juce-extensions)
+        clap_juce_extensions_plugin(TARGET BigBoss
+            CLAP_ID "com.mingusdynasty.bigboss"
+            CLAP_FEATURES audio-effect mastering limiter compressor equalizer stereo)
+    endif()
 
     if(BB_BUILD_SNAPSHOT)
         juce_add_console_app(bb_snapshot PRODUCT_NAME "bb_snapshot")

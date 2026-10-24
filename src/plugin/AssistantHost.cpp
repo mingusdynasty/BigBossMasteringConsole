@@ -66,7 +66,10 @@ void AssistantHost::work()
     }
     thinkingSince.store (juce::Time::getMillisecondCounterHiRes());
     state.store ((int) State::Thinking, std::memory_order_release);
-    auto p = std::make_shared<bb::assist::Plan> (bb::assist::plan (l, r, rate, getGoal(), proc.assistOrder(), &cancel));
+    // MATCH REF plans against the loaded reference; holding it here keeps it alive while planning
+    const auto ref = getGoal() == bb::assist::Goal::Reference ? proc.reference() : nullptr;
+    auto p = std::make_shared<bb::assist::Plan> (bb::assist::plan (l, r, rate, getGoal(), proc.assistOrder(), &cancel,
+                                                                   ref != nullptr ? &ref->profile : nullptr));
     if (cancel.load()) { state.store ((int) State::Idle); return; }
     const bool ok = p->outLufs > -100.0;
     {

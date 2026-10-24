@@ -143,7 +143,7 @@ double targetLufs (Goal g)
         case Goal::Loud:    return -11.0;
         case Goal::Club:    return -9.0;
         case Goal::Dynamic: return -16.0;
-        default:            return -14.0;
+        default:            return -14.0;   // and Reference, until a reference sets it
     }
 }
 
@@ -154,6 +154,7 @@ const char* goalName (Goal g)
         case Goal::Loud:    return "loud";
         case Goal::Club:    return "club";
         case Goal::Dynamic: return "dynamic";
+        case Goal::Reference: return "reference";
         default:            return "streaming";
     }
 }
@@ -196,6 +197,13 @@ Profile analyse (const std::vector<float>& l, const std::vector<float>& r, doubl
         for (int i = 0; i < N; ++i) win[(size_t) i] = 0.5 - 0.5 * std::cos (2 * kPi * i / N);
         std::vector<std::complex<double>> fm ((size_t) N), fs ((size_t) N);
         int frames = 0;
+        // resonances: each frame's prominence (dB over the median around it) per bin
+        const double hzPerBinR = sr / N;
+        const int k0 = std::max (2, (int) (300.0 / hzPerBinR)), k1 = std::min (N / 2 - 2, (int) (8000.0 / hzPerBinR));
+        std::vector<std::vector<float>> prominence ((size_t) std::max (0, k1 - k0 + 1));
+        std::vector<double> frame ((size_t) N / 2 + 1), around, grid, floorDb;
+        for (double kc = k0; kc <= k1 * 1.03; kc *= 1.0293022) grid.push_back (kc);   // 2^(1/24)
+        floorDb.resize (grid.size());
         for (size_t off = 0; off + (size_t) N <= n; off += (size_t) N / 2)
         {
             double e = 0;
@@ -209,7 +217,31 @@ Profile analyse (const std::vector<float>& l, const std::vector<float>& r, doubl
             if (e / (2 * N) < 1e-6) continue;   // below -60 dBFS
             fft (fm);
             fft (fs);
-            for (int k = 0; k <= N / 2; ++k) { mid[(size_t) k] += std::norm (fm[(size_t) k]); side[(size_t) k] += std::norm (fs[(size_t) k]); }
+            for (int k = 0; k <= N / 2; ++k)
+            {
+                frame[(size_t) k] = std::norm (fm[(size_t) k]);
+                mid[(size_t) k] += frame[(size_t) k];
+                side[(size_t) k] += std::norm (fs[(size_t) k]);
+            }
+            // the median, not the mean, of the surroundings (+-1/2 octave), so a loud note nearby
+            // doesn't hide a bump and the bump doesn't raise its own floor; taken on a 1/24-octave
+            // grid and interpolated between
+            for (size_t gi = 0; gi < grid.size(); ++gi)
+            {
+                const double kc = grid[gi];
+                const int lo = std::max (1, (int) std::floor (kc / 1.414214)), hi = std::min (N / 2, (int) std::ceil (kc * 1.414214));
+                around.assign (frame.begin() + lo, frame.begin() + hi + 1);
+                std::nth_element (around.begin(), around.begin() + (long) (around.size() / 2), around.end());
+                floorDb[gi] = toDb (around[around.size() / 2] + 1e-30);
+            }
+            for (int k = k0; k <= k1; ++k)
+            {
+                const double gpos = std::clamp (24.0 * std::log2 (k / grid.front()), 0.0, (double) grid.size() - 1.0);
+                const auto g0 = (size_t) gpos;
+                const size_t g1 = std::min (g0 + 1, grid.size() - 1);
+                const double fl = floorDb[g0] + (floorDb[g1] - floorDb[g0]) * (gpos - (double) g0);
+                prominence[(size_t) (k - k0)].push_back ((float) (toDb (frame[(size_t) k] + 1e-30) - fl));
+            }
             ++frames;
         }
         if (frames > 0)
@@ -237,6 +269,48 @@ Profile analyse (const std::vector<float>& l, const std::vector<float>& r, doubl
             pr.highMid = band (mid, 2500, 5000, true)  - ref - (-1.0);
             pr.air     = band (mid, 8000, 14000, true) - ref - (-3.0);
             pr.bassWidth = band (side, 30, 120, false) - band (mid, 30, 120, false);
+            const double edges[5] = { 120, 500, 2000, 6000, 16000 };
+            for (int b = 0; b < 4; ++b)
+                pr.width[(size_t) b] = band (side, edges[b], std::min (edges[b + 1], 0.45 * sr), false) - band (mid, edges[b], std::min (edges[b + 1], 0.45 * sr), false);
+
+            // resonances: the median prominence holds up only where a peak stays while notes come
+            // and go; local maxima over +-1/12 octave, 3 dB or more, a third of an octave apart
+            if (frames >= 8)
+            {
+                std::vector<double> raw (prominence.size()), med (prominence.size());
+                for (size_t i = 0; i < raw.size(); ++i)
+                {
+                    std::vector<double> v (prominence[i].begin(), prominence[i].end());
+                    raw[i] = percentile (v, 0.5);
+                }
+                // a running median a few percent wide: a held note (a line a bin or two wide) and the
+                // frame-to-frame jitter drop out, a resonance (a bump) stays
+                for (int k = k0; k <= k1; ++k)
+                {
+                    const int d = std::max (5, (int) std::lround (k * 0.025));   // a windowed line spans 5 bins
+                    std::vector<double> v;
+                    for (int j = std::max (k0, k - d); j <= std::min (k1, k + d); ++j) v.push_back (raw[(size_t) (j - k0)]);
+                    med[(size_t) (k - k0)] = percentile (v, 0.5);
+                }
+                std::vector<Profile::Resonance> found;
+                for (int k = k0; k <= k1; ++k)
+                {
+                    const double v = med[(size_t) (k - k0)];
+                    if (v < 3.0) continue;
+                    const int lo = std::max (k0, (int) std::floor (k / 1.059463)), hi = std::min (k1, (int) std::ceil (k * 1.059463));
+                    bool top = true;
+                    for (int j = lo; j <= hi && top; ++j) top = j == k || med[(size_t) (j - k0)] < v || (med[(size_t) (j - k0)] == v && j > k);
+                    if (top) found.push_back ({ k * hzPerBinR, v });
+                }
+                std::sort (found.begin(), found.end(), [] (const auto& a, const auto& b) { return a.db > b.db; });
+                for (const auto& f : found)
+                {
+                    bool apart = true;
+                    for (const auto& kept : pr.resonances) apart = apart && std::abs (std::log2 (f.hz / kept.hz)) >= 1.0 / 3.0;
+                    if (apart) pr.resonances.push_back (f);
+                    if (pr.resonances.size() == 3) break;
+                }
+            }
         }
     }
 
@@ -265,18 +339,34 @@ Profile analyse (const std::vector<float>& l, const std::vector<float>& r, doubl
     return pr;
 }
 
-Plan plan (const std::vector<float>& l, const std::vector<float>& r, double sr, Goal goal, const Order& order, const std::atomic<bool>* cancel)
+Plan plan (const std::vector<float>& l, const std::vector<float>& r, double sr, Goal goal, const Order& order, const std::atomic<bool>* cancel,
+           const Profile* reference)
 {
     Plan p;
     p.in = analyse (l, r, sr);
     const auto& in = p.in;
-    const double target = targetLufs (goal);
     auto cancelled = [cancel] { return cancel != nullptr && cancel->load(); };
     if (in.integrated < -60.0)
     {
         p.notes.push_back ("Not enough audio to go on: play the loudest part of the song and listen again.");
         return p;
     }
+    // with a reference, it stands in for the built-in master curve, and its loudness and density
+    // become the goal
+    const Profile* ref = goal == Goal::Reference && reference != nullptr && reference->integrated > -60.0 ? reference : nullptr;
+    if (goal == Goal::Reference && ref == nullptr)
+    {
+        goal = Goal::Streaming;
+        p.notes.push_back ("No reference loaded (LOAD REF in the analyser), so this is the streaming goal");
+    }
+    const double target = ref != nullptr ? std::clamp (ref->integrated, -20.0, -6.0) : targetLufs (goal);
+    const bool dynamic = ref != nullptr ? target <= -15.0 : goal == Goal::Dynamic;
+    if (ref != nullptr)
+        p.notes.push_back (fmt ("Matching the reference: %.1f LUFS, %.1f dB peak to loudness", ref->integrated, ref->plr));
+    // how far the mix is from the reference (or the master curve), band by band
+    auto dev = [ref] (double mine, double theirs) { return mine - (ref != nullptr ? theirs : 0.0); };
+    const double dLow = dev (in.low, ref ? ref->low : 0), dLowMid = dev (in.lowMid, ref ? ref->lowMid : 0), dMid = dev (in.mid, ref ? ref->mid : 0);
+    const double dHighMid = dev (in.highMid, ref ? ref->highMid : 0), dAir = dev (in.air, ref ? ref->air : 0);
 
     // ---- EQ: half of what it would take to reach the reference, gently, in the museq's bands
     auto move = [] (double deviation, double most) { const double g = std::clamp (-0.5 * deviation, -most, most); return std::abs (g) < 0.75 ? 0.0 : g; };
@@ -290,24 +380,53 @@ Plan plan (const std::vector<float>& l, const std::vector<float>& r, double sr, 
         p.notes.push_back (fmt (gainDb > 0 ? "EQ: +%.1f dB" : "EQ: %.1f dB", gainDb) + what);
     };
     for (int b = 0; b < eq::kBands; ++b) { p.eq.band[b].freq = eq::kRange[b].def; p.eq.band[b].shelf = b == 0 || b == eq::kBands - 1; }
-    setBand (0, 70, move (in.low, 3.0), true, " low shelf at 70 Hz (the low end is " + std::string (in.low > 0 ? "heavy)" : "light)"));
-    setBand (1, 300, std::min (0.0, move (in.lowMid, 3.0)), false, " at 300 Hz to clear mud");
-    setBand (2, 1200, move (in.mid, 2.0), false, " at 1.2 kHz");
-    setBand (3, 3500, move (in.highMid, 2.5), false, in.highMid > 0 ? " at 3.5 kHz to ease harshness" : " at 3.5 kHz for presence");
-    setBand (4, 12000, move (in.air, 3.0), true, in.air < 0 ? " air shelf at 12 kHz" : " high shelf at 12 kHz to tame the top");
+    // the middle bands' moves, before a resonance may claim one of them
+    std::array<double, eq::kBands> want { move (dLow, 3.0), std::min (0.0, move (dLowMid, 3.0)), move (dMid, 2.0), move (dHighMid, 2.5), move (dAir, 3.0) };
+
+    // resonances: the strongest one ringing 4 dB or more over its surroundings gets a cut on a
+    // middle band that covers it and has nothing (or under a dB) to do otherwise; the rest are
+    // pointed out
+    int owned = -1;
+    for (const auto& res : in.resonances)
+    {
+        int pick = -1;
+        if (owned < 0 && res.db >= 4.0)
+            for (int b = 1; b <= 3; ++b)
+                if (res.hz >= eq::kRange[b].lo && res.hz <= eq::kRange[b].hi && std::abs (want[(size_t) b]) < 1.0
+                    && (pick < 0 || std::abs (want[(size_t) b]) < std::abs (want[(size_t) pick])))
+                    pick = b;
+        if (pick >= 0)
+        {
+            const double cut = std::clamp (0.5 * res.db, 1.5, 3.0);   // half of it: a nudge, not a notch
+            p.eq.band[pick].freq = res.hz;
+            p.eq.band[pick].gain = cut;
+            p.eq.band[pick].cut = true;
+            p.notes.push_back (fmt ("EQ: -%.1f dB at %.0f Hz, a resonance standing %.0f dB over its surroundings", cut, res.hz, res.db));
+            owned = pick;
+        }
+        else
+            p.notes.push_back (fmt ("Resonance at %.0f Hz (%.0f dB over its surroundings): worth a narrow cut in the mix", res.hz, res.db));
+    }
+
+    setBand (0, 70, want[0], true, " low shelf at 70 Hz (the low end is " + std::string (dLow > 0 ? "heavy)" : "light)"));
+    if (owned != 1) setBand (1, 300, want[1], false, " at 300 Hz to clear mud");
+    if (owned != 2) setBand (2, 1200, want[2], false, " at 1.2 kHz");
+    if (owned != 3) setBand (3, 3500, want[3], false, dHighMid > 0 ? " at 3.5 kHz to ease harshness" : " at 3.5 kHz for presence");
+    setBand (4, 12000, want[4], true, dAir < 0 ? " air shelf at 12 kHz" : " high shelf at 12 kHz to tame the top");
     p.eq.hpfHz = 25;
-    if (in.bassWidth > -12.0)
+
+    if (in.bassWidth > std::max (-12.0, ref != nullptr ? ref->bassWidth + 3.0 : -12.0))
     {
         p.eq.monoBassHz = 100;
         p.notes.push_back ("EQ: mono below 100 Hz (the low end is wide, " + fmt ("%.0f dB of side)", in.bassWidth));
     }
 
     // ---- tape: the darker 15 ips 456 when the top is harsh, otherwise the cleaner 30 ips GP9
-    const bool harsh = in.highMid > 1.5 || in.air > 2.0;
+    const bool harsh = dHighMid > 1.5 || dAir > 2.0;
     p.tape.speed = harsh ? TapeMachine::ips15 : TapeMachine::ips30;
     p.tape.tape = harsh ? TapeMachine::T456 : TapeMachine::GP9;
     p.tape.bias = TapeMachine::Nominal;
-    p.tape.inputDb = goal == Goal::Dynamic ? -2.0 : 0.0;
+    p.tape.inputDb = dynamic ? -2.0 : 0.0;
     p.tape.outputDb = 0;
     p.tape.wow = 0.1;
     p.tape.link = true;
@@ -322,14 +441,25 @@ Plan plan (const std::vector<float>& l, const std::vector<float>& r, double sr, 
     p.notes.push_back (p.bypass[Deess] ? "De-esser: out, the highs are smooth" : fmt ("De-esser: in, the \"s\" sounds peak at %.0f%% of the energy", 100.0 * std::pow (10.0, in.sibilance / 10.0)));
 
     // ---- compressor: glue, sized by the goal; out if the mix is already dense
-    const double wantGr = goal == Goal::Dynamic ? 1.0 : goal == Goal::Streaming ? 1.5 : 2.5;
-    p.comp.ratio = goal == Goal::Dynamic || goal == Goal::Streaming ? 1 : 2;   // 2:1, 3:1
+    // with a reference, as much glue as its density suggests
+    const double wantGr = ref != nullptr ? (ref->plr < 9.0 ? 2.5 : ref->plr < 12.0 ? 1.5 : 1.0)
+                                         : dynamic ? 1.0 : goal == Goal::Streaming ? 1.5 : 2.5;
+    p.comp.ratio = wantGr < 2.0 ? 1 : 2;   // 2:1, 3:1
     p.comp.attack = 4;                                                          // 10 ms: let transients through
     p.comp.recovery = 5;                                                        // dual
     p.comp.transformer = harsh ? DualCompressor::Nickel : DualCompressor::Iron;
     p.comp.sidechainHpf = true;
-    p.limit.ceilingDb = goal == Goal::Club ? -0.3 : goal == Goal::Loud ? -0.5 : -1.0;
-    p.limit.style = goal == Goal::Club ? Limiter::Dense : goal == Goal::Loud ? Limiter::Punch : Limiter::Transparent;
+    if (ref != nullptr)
+    {
+        // the reference's loudness picks the style; a reference mastered close to full scale gets -0.5
+        p.limit.ceilingDb = ref->peak > -0.7 ? -0.5 : -1.0;
+        p.limit.style = target >= -10.0 ? Limiter::Dense : target >= -12.5 ? Limiter::Punch : Limiter::Transparent;
+    }
+    else
+    {
+        p.limit.ceilingDb = goal == Goal::Club ? -0.3 : goal == Goal::Loud ? -0.5 : -1.0;
+        p.limit.style = goal == Goal::Club ? Limiter::Dense : goal == Goal::Loud ? Limiter::Punch : Limiter::Transparent;
+    }
     p.limit.autoRelease = true;
     p.limit.truePeak = true;
     p.limit.link = 1;
@@ -397,6 +527,21 @@ Plan plan (const std::vector<float>& l, const std::vector<float>& r, double sr, 
     p.notes.push_back (fmt ("Limiter: +%.1f dB of drive into %.1f dBTP", p.limit.driveDb, p.limit.ceilingDb));
     if (out.lufs < target - 1.0)
         p.notes.push_back (fmt ("This mix tops out at %.1f LUFS here; the %.0f LUFS goal would need more drive than is clean", out.lufs, target));
+
+    // stereo, band by band: advice only
+    static const char* const bandName[4] = { "low mids", "mids", "upper mids", "highs" };
+    for (int b = 0; b < 4; ++b)
+    {
+        const double w = in.width[(size_t) b], theirs = ref != nullptr ? ref->width[(size_t) b] : -100.0;
+        const std::string name = bandName[b];
+        if (w <= -99.0) continue;
+        if (w > -3.0)
+            p.notes.push_back ("Stereo: the " + name + fmt (" are very wide (side %.0f dB from mid); check them in mono", w));
+        else if (b >= 2 && w < -24.0)
+            p.notes.push_back ("Stereo: the " + name + fmt (" are close to mono (side %.0f dB under mid); a little width there could open the mix", -w));
+        else if (theirs > -99.0 && std::abs (w - theirs) > 6.0)
+            p.notes.push_back ("Stereo: the " + name + (w > theirs ? " are wider" : " are narrower") + fmt (" than the reference's, by %.0f dB", std::abs (w - theirs)));
+    }
     return p;
 }
 } // namespace bb::assist
