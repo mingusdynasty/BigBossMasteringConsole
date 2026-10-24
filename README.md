@@ -37,7 +37,10 @@ The display shows the result and every change with its reason. Nothing changes u
 | 3 | Shadow Hills-style mastering compressor; our own limiter, scored against FabFilter Pro-L 2 | done |
 | 4 | A new multiband de-esser; the full console UI | done |
 | 5 | The rack UI from Vocal Chain: 1U units, output fader, analyser unit, drag to resize | done |
-| 6 | Presets, the assistant that sets the console up for a mix; the analyser's spectrogram, FREEZE and BYPASS ALL | this version |
+| 6 | Presets, the assistant that sets the console up for a mix; the analyser's spectrogram, FREEZE and BYPASS ALL | done |
+| 7 | Full review: the technical spec ([docs/SPEC.md](docs/SPEC.md)) and the roadmap ([docs/ROADMAP.md](docs/ROADMAP.md)) | done |
+
+What comes next, in order, is in [docs/ROADMAP.md](docs/ROADMAP.md): first a round of safety fixes (Phase A), then dither, level-matched compare and A/B slots, more authentic transformers, and the side-by-side test against Pro-L 2.
 
 None of the hardware has public schematics, so the models are voiced from published specs, manuals and measurements of the units. Each module's notes will say which.
 
@@ -152,6 +155,16 @@ The target menu (−9 to −23 LUFS) only moves the reference line on the bars a
 
 The engine is real-time safe: nothing allocates or locks on the audio thread, gated loudness uses fixed 0.01 LU histograms (so an hour of programme costs the same as a second), and the editor reads atomics and lock-free rings.
 
+## Known limitations
+
+Found in the review of 24 October 2026; each is a Phase A item in [docs/ROADMAP.md](docs/ROADMAP.md).
+
+- **The limiter's ceiling is the output's ceiling only when the limiter is last, the fader is at 0 dB or below, and MONO is off.** The fader and MONO come after the chain, so a fader above 0 dB, or a module dragged below the limiter, can put overs on the output. Watch the output's true-peak readout.
+- **Loading a preset resets INPUT TRIM, the fader and MONO** to their defaults.
+- **If the host changes the module order while the window is open** (restoring a session, undo, the host's own program menu), the faceplates keep the old order until the window is reopened. The audio uses the new order.
+- **The assistant's result belongs to the window**: closing the plugin window while it listens or works, or before APPLY, loses it.
+- **The assistant ignores the fader**: with the fader away from 0 dB, the loudness it lands misses the goal by the fader's setting.
+
 ## Building
 
 CMake 3.22+ and a C++17 compiler. JUCE 8.0.15 is fetched automatically; to use a local checkout, add `-DFETCHCONTENT_SOURCE_DIR_JUCE=/path/to/JUCE`.
@@ -194,6 +207,7 @@ GitHub Actions (`.github/workflows/build.yml`) runs **only when started by hand*
 | `src/dsp/` | Shared with mingusdynasty/chocolatefudgeverb, copied at `6edfcdc` (namespace `cf`): the Jiles–Atherton tape hysteresis and half-band filters (the rest of that folder isn't used here, so it isn't copied). Keep changes in step with that repo. `Oversampler` is ours |
 | `src/plugin/` | JUCE processor and editor; `Params` (parameter ids and ranges); `Presets` (the factory set and the user folder); `ui/` holds the analyser's colours, meter panel, spectrum, spectrogram and goniometer; `rack/` holds the rack: `RackLookAndFeel`, `KnobRenderer` and `Widgets` (ported from mingusdynasty's Vocal Chain, namespace `kit`) and `Panels` (one faceplate per module, the master section, the assistant pop-up, the output unit and the analyser unit) |
 | `resources/fonts/` | Barlow, under the SIL Open Font License (`OFL-barlow.txt`); Yellowtail (the name on the master section, by Astigmatic), under the Apache License 2.0 (`LICENSE-yellowtail.txt`) |
+| `docs/` | `SPEC.md` (signal flow, latency, CPU, every parameter, saved formats, threads, tests), `ROADMAP.md`, the screenshots |
 | `tests/`, `tools/snapshot/` | Engine and plugin tests, fuzzer, UI snapshot tool |
 
 Personal use. JUCE is AGPLv3 unless you hold a commercial licence.
