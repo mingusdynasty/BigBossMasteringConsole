@@ -53,9 +53,23 @@ public:
     void mouseMove (const juce::MouseEvent&) override;
 
 protected:
+    // Ctrl (Cmd on a Mac) or Shift held as a drag starts: six times finer
+    struct FineDrag final : juce::MouseListener
+    {
+        FineDrag (juce::Slider& s, int pixels) : slider (s), base (pixels) { slider.addMouseListener (this, false); }
+        ~FineDrag() override { slider.removeMouseListener (this); }
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            slider.setMouseDragSensitivity (e.mods.isCommandDown() || e.mods.isShiftDown() ? base * 6 : base);
+        }
+        juce::Slider& slider;
+        int base;
+    };
+
     struct Knob
     {
         std::unique_ptr<juce::Slider> slider;
+        std::unique_ptr<FineDrag> fine;
         std::unique_ptr<Apvts::SliderAttachment> attachment;
         int size = 60;
         juce::String paramId;
@@ -114,6 +128,7 @@ private:
     std::array<Switch*, 5> shelf {};   // outer bands only
     Knob *hpf, *lpf, *mono, *out;
     Switch *hpf24, *warm;
+    ChoiceButtons* stereo;
 };
 
 class CompPanel final : public Panel
@@ -214,6 +229,30 @@ private:
 
 inline constexpr int masterHeight = unitHeight / 2;   // BB-1 is a half-height unit
 
+// the preset browser, dropped from BROWSE: a search box (name or tag), the tags as keys, and the list
+class PresetBrowser final : public juce::Component, private juce::ListBoxModel
+{
+public:
+    PresetBrowser (BigBossProcessor&, std::function<void()> onLoaded);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+
+private:
+    int getNumRows() override { return (int) shown.size(); }
+    void paintListBoxItem (int row, juce::Graphics&, int width, int height, bool selected) override;
+    void listBoxItemClicked (int row, const juce::MouseEvent&) override;
+    void refilter();
+    void load (int row);
+
+    BigBossProcessor& proc;
+    std::function<void()> onLoaded;
+    juce::TextEditor search;
+    juce::ListBox list;
+    std::vector<presets::Entry> entries, shown;
+    std::vector<std::unique_ptr<juce::ToggleButton>> tagKeys;
+    juce::String tag;
+};
+
 // the top unit: presets (factory and the user's own), and the keys that open the assistant and the
 // analyser
 class MasterPanel final : public Panel, public juce::TooltipClient
@@ -227,6 +266,7 @@ public:
 
     std::function<void()> onOrderChanged;     // a preset moved the modules
     std::function<bool()> assistantNews;      // lights the lamp by ASSISTANT
+    std::function<void()> onRecallSheet;      // the preset menu's "Export recall sheet..."
     juce::ToggleButton assistantKey { "ASSISTANT" };
     juce::ToggleButton analyserKey { "ANALYSER" };   // the same switch as the output unit's
 
@@ -236,7 +276,12 @@ private:
     void savePreset();
 
     BigBossProcessor& proc;
+    void showBrowser();
+
     juce::ToggleButton prev { "<" }, next { ">" }, save { "SAVE" }, browse { "BROWSE" };
+    juce::ToggleButton undoKey { "UNDO" }, redoKey { "REDO" }, copyKey { "COPY" };
+    std::array<juce::ToggleButton, 4> slotKeys;   // BigBossProcessor::kCompareSlots
+    bool copyArmed = false;
     juce::Rectangle<int> presetLcd;
     juce::String shownPreset;
     bool shownLamp = false;
@@ -292,6 +337,7 @@ private:
     BigBossProcessor& proc;
     juce::Slider fader { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
     Apvts::SliderAttachment faderAttachment;
+    std::unique_ptr<FineDrag> faderFine;
     Knob* trim;
     Switch *mono, *lock;
     juce::ComboBox dither;
@@ -325,9 +371,17 @@ private:
     bbui::Spectrum spectrum;
     bbui::Spectrogram spectrogram;
     bbui::Goniometer gonio;
-    juce::ToggleButton freezeKey { "FREEZE" }, resetKey { "RESET" }, bypassKey { "BYPASS ALL" };
+    void chooseReference();
+    void showReference();   // after a load or a clear: the overlay, the keys
+
+    juce::ToggleButton freezeKey { "FREEZE" }, resetKey { "RESET" }, bypassKey { "BYPASS ALL" }, matchKey { "MATCH" };
+    juce::ToggleButton loadRefKey { "LOAD REF" }, refKey { "REF" };
     juce::ToggleButton inKey { "IN" }, outKey { "OUT" };
     juce::ComboBox target;
+    bbui::CodecPreview codec;
+    std::unique_ptr<juce::FileChooser> chooser;
+    int shownRefVersion = -1;
+    float shownRefGain = 0;
     bool showingOutput = true, frozen = false, shownBypass = false;
     double shownRate = 0;
     juce::Rectangle<int> screen;

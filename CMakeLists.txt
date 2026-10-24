@@ -87,6 +87,7 @@ if(BB_BUILD_PLUGIN)
         src/plugin/PluginProcessor.cpp
         src/plugin/PluginEditor.cpp
         src/plugin/AssistantHost.cpp
+        src/plugin/Reference.cpp
         src/plugin/Params.cpp src/plugin/Presets.cpp
         src/plugin/ui/Look.cpp
         src/plugin/ui/MeterPanel.cpp

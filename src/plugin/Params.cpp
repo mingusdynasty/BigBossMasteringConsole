@@ -75,6 +75,8 @@ void addLayout (juce::AudioProcessorValueTreeState::ParameterLayout& layout, con
     layout.add (std::make_unique<juce::AudioParameterBool> (P { eqHpf24, 1 }, "EQ High-pass 24 dB", false));
     layout.add (std::make_unique<juce::AudioParameterFloat> (P { eqLpf, 1 }, "EQ Low-pass", offRange (4000.0f, 30000.0f, true), 0.0f, hzAttr));
     layout.add (std::make_unique<juce::AudioParameterFloat> (P { eqMono, 1 }, "EQ Mono Bass", offRange (40.0f, 300.0f, false), 0.0f, hzAttr));
+    // where the five bands work: both channels, the mid only, or the side only (the filters stay stereo)
+    layout.add (std::make_unique<juce::AudioParameterChoice> (P { eqStereo, 1 }, "EQ Stereo Mode", juce::StringArray { "Stereo", "Mid", "Side" }, 0));
     layout.add (std::make_unique<juce::AudioParameterFloat> (P { eqOut, 1 }, "EQ Output", juce::NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f, dbAttr()));
 
     // tape

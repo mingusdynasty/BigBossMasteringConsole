@@ -70,6 +70,22 @@ std::vector<Factory> build()
     f.push_back ({ "Transparent", "Acoustic, jazz and classical: compressor, tape and de-esser out, light limiting",
                    make ({ { bypass ("comp"), 1.0f }, { bypass ("tape"), 1.0f }, { bypass ("deess"), 1.0f }, { eqHpf, 20.0f }, { limDrive, 2.0f },
                            { limCeiling, -1.0f } }) });
+
+    const std::pair<const char*, const char*> tags[] = {
+        { "Init", "neutral" },
+        { "Gentle Polish", "gentle, streaming, acoustic" },
+        { "Streaming Master", "streaming, balanced" },
+        { "Loud & Punchy", "loud, punchy, rock, hip-hop" },
+        { "Warm Tape Glue", "warm, tape, glue" },
+        { "Vocal Forward", "vocal, pop, de-ess" },
+        { "Low End Control", "bass, tight, electronic" },
+        { "Bright & Airy", "bright, air, pop" },
+        { "Club Master", "loud, club, electronic" },
+        { "Transparent", "neutral, clean, dynamic, acoustic" },
+    };
+    for (auto& p : f)
+        for (const auto& [name, list] : tags)
+            if (juce::String (p.name) == name) { p.tags = juce::StringArray::fromTokens (list, ",", ""); p.tags.trim(); }
     return f;
 }
 } // namespace
@@ -85,6 +101,41 @@ juce::File userFolder()
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
         .getChildFile ("Big Boss Mastering Console")
         .getChildFile ("Presets");
+}
+
+juce::StringArray tagsOf (const juce::File& file)
+{
+    juce::StringArray t;
+    if (auto xml = juce::XmlDocument::parse (file))
+    {
+        t = juce::StringArray::fromTokens (xml->getStringAttribute ("tags"), ",", "");
+        t.trim();
+        t.removeEmptyStrings();
+    }
+    return t;
+}
+
+std::vector<Entry> all()
+{
+    std::vector<Entry> out;
+    const auto& f = factory();
+    for (int i = 0; i < (int) f.size(); ++i) out.push_back ({ f[(size_t) i].name, f[(size_t) i].blurb, f[(size_t) i].tags, i, {} });
+    for (const auto& file : userPresets()) out.push_back ({ file.getFileNameWithoutExtension(), {}, tagsOf (file), -1, file });
+    return out;
+}
+
+bool matches (const Entry& e, const juce::String& search, const juce::String& tag)
+{
+    if (tag.isNotEmpty() && ! e.tags.contains (tag, true)) return false;
+    if (search.trim().isEmpty()) return true;
+    for (const auto& word : juce::StringArray::fromTokens (search, " ", ""))
+    {
+        if (word.isEmpty()) continue;
+        bool found = e.name.containsIgnoreCase (word);
+        for (const auto& t : e.tags) found = found || t.containsIgnoreCase (word);
+        if (! found) return false;
+    }
+    return true;
 }
 
 juce::Array<juce::File> userPresets()

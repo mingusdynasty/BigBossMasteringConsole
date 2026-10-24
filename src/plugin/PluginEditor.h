@@ -21,6 +21,9 @@ public:
     void showAnalyser (bool on);
     void showAssistant (bool on);
     kit::AssistantPanel& assistantSection() { return assistant; }
+    // a recall sheet: the rack as it stands, then every setting written out (for notes or a client)
+    juce::Image recallSheet();
+    void exportRecallSheet();
 
     static constexpr int kModules = BigBossProcessor::kNumSlots;
     static constexpr int designWidth = kit::rackWidth;
@@ -44,6 +47,7 @@ private:
     kit::AnalyserPanel analyser;
     kit::AssistantPanel assistant;
     juce::TooltipWindow tooltips { this, 600 };
+    std::unique_ptr<juce::FileChooser> chooser;
     int draggingSlot = -1, dragRow = -1;
     bb::Chain::Order laidOut {};   // the order the modules were last laid out in
 

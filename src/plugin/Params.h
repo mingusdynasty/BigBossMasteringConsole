@@ -19,7 +19,7 @@ inline juce::String eqGain (int b)  { return "eq_b" + juce::String (b) + "_gain"
 inline juce::String eqCut (int b)   { return "eq_b" + juce::String (b) + "_cut"; }
 inline juce::String eqShelf (int b) { return "eq_b" + juce::String (b) + "_shelf"; }
 inline const juce::String eqWarm = "eq_warm", eqHpf = "eq_hpf", eqHpf24 = "eq_hpf_24", eqLpf = "eq_lpf",
-                          eqMono = "eq_mono", eqOut = "eq_out";
+                          eqMono = "eq_mono", eqOut = "eq_out", eqStereo = "eq_stereo";
 
 // tape
 inline const juce::String tapeSpeed = "tape_speed", tapeEq = "tape_eq", tapeType = "tape_type", tapeBias = "tape_bias",

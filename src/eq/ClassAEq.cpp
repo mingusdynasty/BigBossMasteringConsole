@@ -32,6 +32,7 @@ void ClassAEq::prepare (double sampleRate, int maxBlock)
     hpf.want = target.hpfHz > 0; hpf.mix = hpf.want ? 1 : 0; hpf.freq = hpf.want ? target.hpfHz : 20; hpf.order = target.hpfOrder;
     lpf.want = target.lpfHz > 0; lpf.mix = lpf.want ? 1 : 0; lpf.freq = lpf.want ? target.lpfHz : 20000;
     mono.want = target.monoBassHz > 0; mono.mix = mono.want ? 1 : 0; mono.freq = mono.want ? target.monoBassHz : 60;
+    stereoNow = target.stereo;
     warm = target.warm ? 1 : 0;
     outGain = std::pow (10.0, target.outputDb / 20);
     reset();
@@ -82,12 +83,15 @@ void ClassAEq::updateFilter (Filter& f, bool high, double wantHz, int wantOrder)
 
 void ClassAEq::update()
 {
+    // moving the bands between stereo, mid and side is a change of shape for all of them
+    const bool restereo = target.stereo != stereoNow;
+    bool allFlat = true;
     for (int i = 0; i < eq::kBands; ++i)
     {
         auto& b = band[(size_t) i];
         const auto& t = target.band[i];
         const bool shelf = t.shelf && eq::kRange[i].canShelf;
-        const bool reshape = t.cut != b.cut || shelf != b.shelf;
+        const bool reshape = t.cut != b.cut || shelf != b.shelf || restereo;
         // a shape change happens at 0 dB, where every shape is flat
         const double gainT = reshape ? 0.0 : t.gain;
         const double f0 = b.freq, g0 = b.gain, q0 = b.q;
@@ -97,7 +101,7 @@ void ClassAEq::update()
         // land exactly, so a band at rest is not redesigned forever
         if (std::abs (b.freq - freqT) < 1e-4 * freqT) b.freq = freqT;
         if (std::abs (b.gain - gainT) < 1e-4) b.gain = gainT;
-        if (reshape && b.gain < 0.01)
+        if (reshape && b.gain < 0.001)   // 0.001 dB: dropping the filter there is inaudible
         {
             b.gain = 0; b.cut = t.cut; b.shelf = shelf;
         }
@@ -107,6 +111,12 @@ void ClassAEq::update()
         if (std::abs (b.q - qT) < 1e-5) b.q = qT;
         if (std::abs (b.freq - f0) > 1e-6 * f0 || std::abs (b.gain - g0) > 1e-7 || std::abs (b.q - q0) > 1e-7)
             b.f.c = eq::design (shape, i, b.q, rate);
+        allFlat = allFlat && b.gain == 0.0;
+    }
+    if (restereo && allFlat)
+    {
+        stereoNow = target.stereo;
+        for (auto& b : band) b.f.clear();
     }
     updateFilter (hpf, true, target.hpfHz, target.hpfOrder >= 4 ? 4 : 2);
     updateFilter (lpf, false, target.lpfHz, 2);
@@ -136,11 +146,25 @@ void ClassAEq::process (double* l, double* r, int n)
                 if (hpf.order >= 4) y = hpf.s2.run (c, y);
                 x[c] += hpf.mix * (y - x[c]);
             }
-        for (auto& b : band)
-            if (b.gain > 1e-6)
-                for (int c = 0; c < 2; ++c) x[c] = b.f.run (c, x[c]);
-            else
-                b.f.clear();
+        if (stereoNow == 0)
+        {
+            for (auto& b : band)
+                if (b.gain > 1e-6)
+                    for (int c = 0; c < 2; ++c) x[c] = b.f.run (c, x[c]);
+                else
+                    b.f.clear();
+        }
+        else
+        {
+            // the bands on the mid or the side only: the other passes untouched
+            double ms[2] { 0.5 * (x[0] + x[1]), 0.5 * (x[0] - x[1]) };
+            const int c = stereoNow == 1 ? 0 : 1;
+            for (auto& b : band)
+                if (b.gain > 1e-6) ms[c] = b.f.run (c, ms[c]);
+                else b.f.clear();
+            x[0] = ms[0] + ms[1];
+            x[1] = ms[0] - ms[1];
+        }
         if (lpf.mix > 0)
             for (int c = 0; c < 2; ++c) x[c] += lpf.mix * (lpf.s1.run (c, x[c]) - x[c]);
         if (mono.mix > 0)

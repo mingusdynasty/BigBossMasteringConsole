@@ -7,6 +7,7 @@
 #include "plugin/Params.h"
 #include "plugin/rack/Panels.h"
 #include "meter/TruePeak.h"
+#include "plugin/ui/Spectrum.h"
 
 #include <juce_dsp/juce_dsp.h>
 
@@ -442,6 +443,177 @@ int main (int argc, char** argv)
         CHECK (p->assistant().apply(), "the plan applies");
         CHECK (std::abs (get (*p, pid::volume)) < 0.01f, "applying a plan puts the fader at 0 dB (%g)", get (*p, pid::volume));
         CHECK (p->assistant().undo() && std::abs (get (*p, pid::volume) - 5.0f) < 0.01f, "UNDO puts the fader back (%g)", get (*p, pid::volume));
+    }
+
+    // runs the test mix for some seconds; returns the output's short-term loudness at the end
+    auto playMix = [&] (BigBossProcessor& p, TestMix& mix, double seconds, std::function<void (int)> before = {})
+    {
+        juce::AudioBuffer<float> buf (2, kBlock);
+        juce::MidiBuffer midi;
+        for (int k = 0; k < (int) (seconds * kSr / kBlock); ++k)
+        {
+            if (before) before (k);
+            mix.fill (buf, kSr);
+            p.processBlock (buf, midi);
+        }
+        return p.outMeters.readings.shortTerm.load();
+    };
+
+    // MATCH: with the console 6 dB louder than the mix, BYPASS ALL plays the mix at the console's loudness
+    {
+        auto p = make();   // drive 8 dB into the limiter
+        TestMix mix;
+        const float console = playMix (*p, mix, 8.0);
+        CHECK (std::abs (p->matchGainDb() - (console - p->inMeters.readings.shortTerm.load())) < 0.5f,
+               "MATCH follows the loudness difference (%.2f dB)", p->matchGainDb());
+        p->bypassAll = true;
+        const float plain = playMix (*p, mix, 4.0);
+        p->matchCompare = true;
+        const float matched = playMix (*p, mix, 4.0);
+        CHECK (console - plain > 3.0f, "without MATCH the bypassed mix is quieter (%.1f against %.1f LUFS)", plain, console);
+        CHECK (std::abs (matched - console) < 1.0f, "with MATCH the bypassed mix is as loud as the console (%.1f against %.1f LUFS)", matched, console);
+    }
+
+    // the reference track: loaded, measured, and played at the console's loudness
+    {
+        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("bb-test-reference.wav");
+        {
+            juce::AudioBuffer<float> ref (2, (int) (6 * 44100));
+            TestMix other;
+            juce::AudioBuffer<float> block (2, 441);
+            for (int off = 0; off < ref.getNumSamples(); off += 441)
+            {
+                other.fill (block, 44100);
+                for (int c = 0; c < 2; ++c) ref.copyFrom (c, off, block, c, 0, 441);
+            }
+            ref.applyGain (0.5f);   // about 6 dB under the raw mix
+            file.deleteFile();
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), 44100, 2, 24, {}, 0));
+            CHECK (w != nullptr, "a reference file is written");
+            if (w != nullptr) w->writeFromAudioSampleBuffer (ref, 0, ref.getNumSamples());
+        }
+        auto p = make();
+        juce::String error;
+        CHECK (p->loadReference (file, error), "a reference track loads (%s)", error.toRawUTF8());
+        const auto t = p->reference();
+        CHECK (t != nullptr && std::abs (t->rate - kSr) < 0.5 && std::abs (t->audio.getNumSamples() - 6 * kSr) < 100,
+               "the reference is resampled to the console's rate");
+        CHECK (t != nullptr && t->lufs > -40 && t->lufs < -10 && ! t->spectrum.empty(), "the reference is measured (%.1f LUFS)", t != nullptr ? t->lufs : 0.0);
+        TestMix mix;
+        const float console = playMix (*p, mix, 8.0);
+        p->refPlay = true;
+        const float refLoud = playMix (*p, mix, 4.0);
+        CHECK (std::abs (refLoud - console) < 1.0f, "REF plays the reference at the console's loudness (%.1f against %.1f LUFS)", refLoud, console);
+        juce::MemoryBlock mb;
+        p->getStateInformation (mb);
+        auto q = make();
+        q->setStateInformation (mb.getData(), (int) mb.getSize());
+        CHECK (q->reference() != nullptr && q->reference()->file == file, "the session remembers the reference track");
+        p->refPlay = false;
+        p->clearReference();
+        CHECK (p->reference() == nullptr, "the reference clears");
+        file.deleteFile();
+    }
+
+    // A/B/C/D: each slot keeps its own settings and order; the session keeps them all
+    {
+        auto p = make();
+        set (*p, pid::limLast, 0.0f);
+        set (*p, pid::eqGain (2), 3.0f);
+        p->selectSlot (1);   // B starts as a copy
+        CHECK (std::abs (get (*p, pid::eqGain (2)) - 3.0f) < 0.01f, "an empty slot starts as a copy");
+        set (*p, pid::eqGain (2), 7.0f);
+        p->setOrder ({ 4, 0, 1, 2, 3 });
+        p->selectSlot (0);
+        CHECK (std::abs (get (*p, pid::eqGain (2)) - 3.0f) < 0.01f && p->getOrder()[0] == 0, "slot A comes back as it was");
+        p->selectSlot (1);
+        CHECK (std::abs (get (*p, pid::eqGain (2)) - 7.0f) < 0.01f && p->getOrder()[0] == 4, "slot B comes back as it was");
+        set (*p, pid::volume, -5.0f);
+        p->selectSlot (0);
+        CHECK (std::abs (get (*p, pid::volume) + 5.0f) < 0.01f, "switching slots leaves the fader alone");
+        p->copyToSlot (2);
+        juce::MemoryBlock mb;
+        p->getStateInformation (mb);
+        auto q = make();
+        q->setStateInformation (mb.getData(), (int) mb.getSize());
+        CHECK (q->activeSlot() == 0 && q->slotUsed (1) && q->slotUsed (2) && ! q->slotUsed (3), "the session keeps the slots");
+        q->selectSlot (1);
+        CHECK (std::abs (get (*q, pid::eqGain (2)) - 7.0f) < 0.01f && q->getOrder()[0] == 4, "a restored slot holds its settings and order");
+    }
+
+    // UNDO / REDO: each finished edit is a step
+    {
+        auto p = make();
+        p->checkpoint();
+        auto* g = p->apvts.getParameter (pid::compOptoThr);
+        auto gesture = [&] (float v) { g->beginChangeGesture(); g->setValueNotifyingHost (g->convertTo0to1 (v)); g->endChangeGesture(); p->checkpoint(); };
+        const float start = get (*p, pid::compOptoThr);
+        gesture (-30.0f);
+        gesture (-20.0f);
+        p->loadFactoryPreset (4);
+        p->checkpoint();
+        CHECK (p->undo(), "undo goes back");
+        CHECK (std::abs (get (*p, pid::compOptoThr) + 20.0f) < 0.01f, "undo takes back a preset (%g)", get (*p, pid::compOptoThr));
+        CHECK (p->undo() && std::abs (get (*p, pid::compOptoThr) + 30.0f) < 0.01f, "undo again takes back a control move");
+        CHECK (p->undo() && std::abs (get (*p, pid::compOptoThr) - start) < 0.01f, "and again, to the start");
+        CHECK (! p->canUndo(), "nothing before the start");
+        CHECK (p->redo() && std::abs (get (*p, pid::compOptoThr) + 30.0f) < 0.01f, "redo steps forward");
+        gesture (-10.0f);
+        CHECK (! p->canRedo(), "a new edit drops what could be redone");
+    }
+
+    // the preset browser's search: names and tags, any order of words
+    {
+        const auto all = presets::all();
+        int loud = 0, clubElectronic = 0;
+        for (const auto& e : all)
+        {
+            if (presets::matches (e, {}, "loud")) ++loud;
+            if (presets::matches (e, "electronic CLUB", {})) ++clubElectronic;
+        }
+        CHECK (loud == 2, "the LOUD tag finds two factory presets (%d)", loud);
+        CHECK (clubElectronic == 1, "a search across name and tag finds Club Master (%d)", clubElectronic);
+    }
+
+    // the codec preview: band-limiting leaves a 1 kHz tone alone and removes an 18 kHz one for MP3 (16 kHz)
+    {
+        for (double hz : { 1000.0, 18000.0 })
+        {
+            bb::MeterSuite suite;
+            suite.prepare (kSr, 2);
+            bbui::CodecPreview codec;
+            codec.setSource (&suite, kSr);
+            std::vector<double> x (4800);
+            for (int b = 0; b < 20; ++b)
+            {
+                for (size_t i = 0; i < x.size(); ++i)
+                {
+                    const double n = (double) (b * 4800 + (int) i);
+                    const double fade = std::min (1.0, n / 4800.0);   // eased in: an abrupt start splatters past the cutoff
+                    x[i] = 0.891 * fade * fade * std::sin (2 * kPi * hz * n / kSr);
+                }
+                suite.process (x.data(), x.data(), (int) x.size());
+                codec.tick();
+            }
+            const float mp3 = codec.truePeakDb (0), aac = codec.truePeakDb (1);
+            if (hz < 10000)
+                CHECK (std::abs (mp3 + 1.0f) < 0.1f && std::abs (aac + 1.0f) < 0.1f, "codec preview: 1 kHz at -1 dBTP reads -1 (%.2f, %.2f)", mp3, aac);
+            else
+                CHECK (mp3 < -30.0f && std::abs (aac + 1.0f) < 0.2f, "codec preview: 18 kHz is gone for MP3, kept for AAC (%.1f, %.1f)", mp3, aac);
+        }
+    }
+
+    // the recall sheet: the rack and every setting
+    {
+        auto p = make();
+        std::unique_ptr<juce::AudioProcessorEditor> ed (p->createEditor());
+        if (auto* editor = dynamic_cast<BigBossEditor*> (ed.get()))
+        {
+            const auto sheet = editor->recallSheet();
+            CHECK (sheet.getWidth() == BigBossEditor::designWidth && sheet.getHeight() > BigBossEditor::designHeight + 300,
+                   "the recall sheet holds the rack and the settings (%d x %d)", sheet.getWidth(), sheet.getHeight());
+        }
     }
 
     // golden renders: each factory preset on the test mix, against the stored numbers, so a change to

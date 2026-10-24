@@ -14,8 +14,9 @@
 #include "meter/MeterSuite.h"
 #include "AssistantHost.h"
 #include "Presets.h"
+#include "Reference.h"
 
-class BigBossProcessor final : public juce::AudioProcessor
+class BigBossProcessor final : public juce::AudioProcessor, private juce::AudioProcessorListener
 {
 public:
     BigBossProcessor();
@@ -87,6 +88,38 @@ public:
     // while the chain keeps running and both meters keep measuring. Not saved, so a session never
     // opens bypassed.
     std::atomic<bool> bypassAll { false };
+    // MATCH: BYPASS ALL plays the dry signal at the console's loudness, so the compare is about sound,
+    // not level. The difference (output minus input short-term loudness) is followed while the console
+    // is heard, and held while it isn't. Not saved.
+    std::atomic<bool> matchCompare { false };
+    float matchGainDb() const { return matchDb.load (std::memory_order_relaxed); }
+
+    // the analyser's reference track: REF plays it, looping, at the console's loudness. The file is
+    // remembered with the session
+    bool loadReference (const juce::File&, juce::String& error);
+    void clearReference();
+    std::shared_ptr<const ReferenceTrack> reference() const;   // null if none
+    std::atomic<bool> refPlay { false };
+    std::atomic<int> refVersion { 0 };   // changes with every load or clear
+    float referenceGainDb() const { return refGainDb.load (std::memory_order_relaxed); }
+
+    // A/B/C/D: four sets of settings (everything a preset holds, and the order) to switch between.
+    // Saved with the session
+    static constexpr int kCompareSlots = 4;
+    int activeSlot() const { return compareActive; }
+    bool slotUsed (int i) const { return compareSlots[(size_t) i].used; }
+    void selectSlot (int i);   // keeps the current settings in the active slot, then loads i (an empty
+                               // slot starts as a copy of the current settings)
+    void copyToSlot (int i);   // the current settings into slot i, staying where we are
+
+    // UNDO / REDO inside the plugin: a snapshot of every parameter and the order after each edit (a
+    // control let go, a preset, a slot, a plan, a reorder). Kept while the plugin is loaded, not saved
+    bool canUndo() const { return historyAt > 0; }
+    bool canRedo() const { return historyAt + 1 < (int) history.size(); }
+    bool undo();
+    bool redo();
+    void noteEdit() { editPending.store (true); }   // anything that changed settings outside a gesture
+    void checkpoint();   // message thread: records a snapshot if an edit has finished since the last
 
     // sample peak (dBFS) per channel since the last call, before the input trim or after the fader; for the meters
     float takePeakDb (bool output, int ch);
@@ -99,7 +132,7 @@ public:
     // telling the host about each change.
     void loadFactoryPreset (int index);
     bool loadUserPreset (const juce::File&);
-    bool saveUserPreset (const juce::String& name);   // false if the file couldn't be written
+    bool saveUserPreset (const juce::String& name, const juce::StringArray& tags = {});   // false if the file couldn't be written
     juce::String getPresetName() const;               // shown on the preset display; saved with the session
     void setPresetName (const juce::String&);
     presets::Values currentValues() const;             // every parameter's plain value
@@ -144,6 +177,39 @@ private:
     std::array<std::atomic<float>, 2> inPeak {}, outPeak {};
     std::atomic<float> overDb { 0.0f }, lockDb { 0.0f };
     std::atomic<int> currentFactory { 0 };
+
+    // MATCH and REF levels: the output's and input's short-term loudness, followed while the console
+    // is what's heard
+    double loudIn = -200, loudOut = -200, matchEst = 0, dryGain = 1, refGain = 1, refMix = 0;
+    std::atomic<float> matchDb { 0.0f }, refGainDb { 0.0f };
+    std::shared_ptr<ReferenceTrack> ref;
+    juce::SpinLock refLock;   // the audio thread only ever tries it
+    int refPos = 0, heardFor = 0;
+
+    struct Snapshot
+    {
+        presets::Values values;
+        bb::Chain::Order order {};
+        bool used = false;
+        bool operator== (const Snapshot& o) const { return values == o.values && order == o.order; }
+    };
+    Snapshot snapshot (bool sessionToo) const;
+    void restore (const Snapshot&, Apply how);
+    std::array<Snapshot, kCompareSlots> compareSlots;
+    int compareActive = 0;
+
+    std::vector<Snapshot> history;
+    int historyAt = -1;
+    std::atomic<bool> editPending { true };
+    std::atomic<int> gesturesOpen { 0 };
+    bool applyingHistory = false;
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
+    void audioProcessorChanged (juce::AudioProcessor*, const juce::AudioProcessorListener::ChangeDetails&) override {}
+    void audioProcessorParameterChangeGestureBegin (juce::AudioProcessor*, int) override { ++gesturesOpen; }
+    void audioProcessorParameterChangeGestureEnd (juce::AudioProcessor*, int) override
+    {
+        if (--gesturesOpen <= 0) { gesturesOpen = 0; editPending.store (true); }
+    }
     juce::String presetName { "Init" };
     mutable juce::SpinLock presetNameLock;
 
@@ -166,7 +232,7 @@ private:
     struct EqParams
     {
         std::array<std::atomic<float>*, bb::eq::kBands> freq {}, gain {}, cut {}, shelf {};   // shelf: outer bands only
-        std::atomic<float>* warm = nullptr, *hpf = nullptr, *hpf24 = nullptr, *lpf = nullptr, *mono = nullptr, *out = nullptr;
+        std::atomic<float>* warm = nullptr, *hpf = nullptr, *hpf24 = nullptr, *lpf = nullptr, *mono = nullptr, *out = nullptr, *stereo = nullptr;
     } pEq;
     struct TapeParams
     {

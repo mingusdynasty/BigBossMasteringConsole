@@ -23,6 +23,14 @@ Spectrum::Spectrum()
     raw.assign (kSize / 2 + 1, -200.0f);
 }
 
+void Spectrum::setReference (std::vector<float> db, float offsetDb, const juce::String& label)
+{
+    refDb = std::move (db);
+    refOffset = offsetDb;
+    refLabel = label;
+    repaint();
+}
+
 void Spectrum::clearPeak()
 {
     std::fill (peak.begin(), peak.end(), -200.0f);
@@ -126,7 +134,12 @@ void Spectrum::paint (juce::Graphics& g)
     g.setFont (font (10.5f, true));
     g.drawText ("SPECTRUM", title, juce::Justification::left);
     g.setFont (font (10.0f));
-    g.drawText ("mid   side   " + juce::String (kSlope, 1) + " dB/oct", title, juce::Justification::right);
+    g.drawText (juce::String (refDb.empty() ? "" : "ref   ") + "mid   side   " + juce::String (kSlope, 1) + " dB/oct", title, juce::Justification::right);
+    if (note.isNotEmpty())
+    {
+        g.setColour (col::legend);
+        g.drawText (note, title.withTrimmedLeft (80).withTrimmedRight (150), juce::Justification::centred);
+    }
 
     auto r = rb.toFloat().withTrimmedLeft (26.0f).withTrimmedBottom (14.0f);
     g.setColour (col::bg);
@@ -166,7 +179,104 @@ void Spectrum::paint (juce::Graphics& g)
     g.strokePath (peakLine, juce::PathStrokeType (1.0f));
     g.setColour (col::amber);
     g.strokePath (line, juce::PathStrokeType (1.5f));
+    if (! refDb.empty())
+    {
+        std::vector<float> shifted (refDb);
+        for (auto& v : shifted) v += refOffset;
+        juce::Path refLine;
+        buildCurve (shifted, r, refLine, false);
+        g.setColour (juce::Colours::white.withAlpha (0.8f));
+        g.strokePath (refLine, juce::PathStrokeType (1.3f));
+        g.setFont (font (10.0f, true));
+        g.drawText (refLabel, r.reduced (8.0f, 4.0f), juce::Justification::topLeft);
+    }
     g.restoreState();
+}
+
+// ------------------------------------------------------------------- codec preview
+
+CodecPreview::CodecPreview()
+{
+    for (auto& h : held) h = -200.0f;
+}
+
+const char* CodecPreview::name (int codec) { return codec == 0 ? "MP3 128k" : "AAC 256k"; }
+
+void CodecPreview::setSource (bb::MeterSuite* m, double sampleRate)
+{
+    src = m;
+    sr = sampleRate > 0 ? sampleRate : 48000.0;
+    readPos = m != nullptr ? m->samples.head() : 0;
+    // Kaiser-windowed sinc low-passes (beta 8: about 80 dB down past the transition)
+    const double cutoff[kCodecs] = { 16000.0, 19500.0 };
+    auto bessel0 = [] (double x)
+    {
+        double sum = 1, term = 1;
+        for (int k = 1; k < 30; ++k) { term *= (x / (2 * k)) * (x / (2 * k)); sum += term; }
+        return sum;
+    };
+    for (int c = 0; c < kCodecs; ++c)
+    {
+        auto& h = coef[(size_t) c];
+        h.assign (kTaps, 0.0);
+        const double fc = std::min (cutoff[c], 0.45 * sr) / sr;
+        const int mid = kTaps / 2;
+        double sum = 0;
+        for (int i = 0; i < kTaps; ++i)
+        {
+            const double t = i - mid;
+            const double sinc = i == mid ? 2 * fc : std::sin (2 * juce::MathConstants<double>::pi * fc * t) / (juce::MathConstants<double>::pi * t);
+            const double w = (double) i / (kTaps - 1) * 2 - 1;
+            h[(size_t) i] = sinc * bessel0 (8.0 * std::sqrt (std::max (0.0, 1 - w * w))) / bessel0 (8.0);
+            sum += h[(size_t) i];
+        }
+        for (auto& v : h) v /= sum;
+        meter[(size_t) c].prepare (sr, 2);
+    }
+    reset();
+}
+
+void CodecPreview::reset()
+{
+    for (auto& codec : hist) for (auto& ch : codec) ch.fill (0.0);
+    pos = 0;
+    for (auto& m : meter) m.reset();
+    for (auto& h : held) h = -200.0f;
+}
+
+void CodecPreview::tick()
+{
+    if (src == nullptr) return;
+    bb::StereoSample buf[2048];
+    for (int got; (got = src->samples.read (readPos, buf, 2048)) > 0;)
+    {
+        outL.resize ((size_t) got);
+        outR.resize ((size_t) got);
+        for (int c = 0; c < kCodecs; ++c)
+        {
+            const auto& h = coef[(size_t) c];
+            int p = pos;
+            for (int i = 0; i < got; ++i)
+            {
+                // doubled history: the window is always contiguous
+                auto& hl = hist[(size_t) c][0];
+                auto& hr = hist[(size_t) c][1];
+                hl[(size_t) p] = hl[(size_t) (p + kTaps)] = buf[i].l;
+                hr[(size_t) p] = hr[(size_t) (p + kTaps)] = buf[i].r;
+                double yl = 0, yr = 0;
+                const double* wl = hl.data() + p + 1;
+                const double* wr = hr.data() + p + 1;
+                for (int k = 0; k < kTaps; ++k) { yl += h[(size_t) (kTaps - 1 - k)] * wl[k]; yr += h[(size_t) (kTaps - 1 - k)] * wr[k]; }
+                outL[(size_t) i] = yl;
+                outR[(size_t) i] = yr;
+                p = p + 1 == kTaps ? 0 : p + 1;
+            }
+            if (c == kCodecs - 1) pos = p;
+            const double* chs[2] { outL.data(), outR.data() };
+            meter[(size_t) c].process (chs, got);
+            held[(size_t) c] = juce::jmax (held[(size_t) c], bb::MeterSuite::toDb (juce::jmax (meter[(size_t) c].heldPeak (0), meter[(size_t) c].heldPeak (1))));
+        }
+    }
 }
 
 Spectrogram::Spectrogram()

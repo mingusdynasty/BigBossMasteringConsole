@@ -448,8 +448,66 @@ static void testEqBypass()
     }
 }
 
+// M/S on the BB-5: in MID the bands touch only the mid, in SIDE only the side
+static void testEqStereoModes()
+{
+    const double sr = 48000;
+    for (int mode : { 1, 2 })
+    {
+        // the level (dB) a 1 kHz tone comes out at, for a mid-only (L = R) or side-only (L = -R) input,
+        // with +6 dB at 1 kHz in the mid band
+        auto level = [&] (bool sideIn)
+        {
+            bb::ClassAEq eq;
+            bb::eq::Settings st;
+            st.band[2] = { 1000.0, 6.0, false, false };
+            st.stereo = mode;
+            eq.setSettings (st);
+            eq.prepare (sr, 512);
+            auto l = sine (sr, 1000, 0.1, 0.5), r = l;
+            if (sideIn) for (auto& v : r) v = -v;
+            runBlocks ([&] (double* a, double* b, int n) { eq.process (a, b, n); }, l, r);
+            double peak = 0;
+            for (size_t i = l.size() / 2; i < l.size(); ++i) peak = std::max (peak, std::abs (l[i]));
+            return 20 * std::log10 (peak / 0.1);
+        };
+        const double mid = level (false), side = level (true);
+        const double boosted = mode == 1 ? mid : side, untouched = mode == 1 ? side : mid;
+        CHECK (std::abs (boosted - 6.0) < 0.3, "eq %s mode: the %s gets the boost (%+.2f dB)", mode == 1 ? "MID" : "SIDE", mode == 1 ? "mid" : "side", boosted);
+        CHECK (std::abs (untouched) < 0.05, "eq %s mode: the %s is untouched (%+.3f dB)", mode == 1 ? "MID" : "SIDE", mode == 1 ? "side" : "mid", untouched);
+    }
+
+    // switching the mode under a boost fades the bands through 0 dB and back: no worse than turning
+    // the band's gain down by hand (the EQ's ordinary 20 ms glide)
+    auto across = [&] (bool switchMode)
+    {
+        bb::ClassAEq eq;
+        bb::eq::Settings st;
+        st.band[2] = { 1000.0, 9.0, false, false };
+        eq.setSettings (st);
+        eq.prepare (sr, 256);
+        auto l = sine (sr, 1000, 0.1, 0.6), r = sine (sr, 1000, 0.05, 0.6);
+        for (size_t pos = 0; pos < l.size(); pos += 256)
+        {
+            if (pos == 256 * 80)
+            {
+                if (switchMode) st.stereo = 2; else st.band[2].gain = 0.0;
+                eq.setSettings (st);
+            }
+            eq.process (l.data() + pos, r.data() + pos, (int) std::min<size_t> (256, l.size() - pos));
+        }
+        double worst = 0;
+        for (size_t i = 256 * 80; i < l.size(); ++i)
+            worst = std::max (worst, std::abs (l[i] - 4 * l[i - 1] + 6 * l[i - 2] - 4 * l[i - 3] + l[i - 4]));
+        return worst;
+    };
+    const double modeSwitch = across (true), byHand = across (false);
+    CHECK (modeSwitch < byHand * 1.2, "eq stereo mode switches as smoothly as a gain move (4th difference %g, by hand %g)", modeSwitch, byHand);
+}
+
 int main()
 {
+    testEqStereoModes();
     testEqBypass();
     testDither();
     testEq();
