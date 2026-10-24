@@ -16,6 +16,14 @@ double besselI0 (double x)
     return sum;
 }
 
+// four partial sums, so the compiler can vectorise the reconstruction (it may not reorder one sum)
+inline double dot32 (const double* a, const double* b)
+{
+    double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+    for (int t = 0; t < 32; t += 4) { s0 += a[t] * b[t]; s1 += a[t + 1] * b[t + 1]; s2 += a[t + 2] * b[t + 2]; s3 += a[t + 3] * b[t + 3]; }
+    return (s0 + s1) + (s2 + s3);
+}
+
 double smoothing (double seconds, double sr) { return 1.0 - std::exp (-1.0 / (std::max (1e-6, seconds) * sr)); }
 double dbToLin (double db) { return std::pow (10.0, db / 20.0); }
 }
@@ -107,6 +115,7 @@ void Limiter::reset()
 
 double Limiter::segmentPeak (Channel& c, double x, bool truePeak)
 {
+    static_assert (kTaps == 32, "the reconstruction uses dot32");
     // newest first: hist[hpos .. hpos + kTaps)
     c.hpos = (c.hpos - 1 + kTaps) % kTaps;
     c.hist[(size_t) c.hpos] = c.hist[(size_t) (c.hpos + kTaps)] = x;
@@ -116,10 +125,7 @@ double Limiter::segmentPeak (Channel& c, double x, bool truePeak)
     // the phases fall between x[n - kFirDelay] and x[n - kFirDelay + 1], evenly spaced across segments
     for (int p = 0; p < L; ++p)
     {
-        const double* cf = coef.data() + p * kTaps;
-        double y = 0;
-        for (int t = 0; t < kTaps; ++t) y += cf[t] * w[t];
-        const double a2 = std::abs (y);
+        const double a2 = std::abs (dot32 (coef.data() + p * kTaps, w));
         pk = std::max (pk, a2);
         // a crest lies between the reconstructed points: a parabola through the three around it finds it
         const double curve = 2 * c.ph1 - c.ph0 - a2;

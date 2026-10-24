@@ -35,7 +35,7 @@ std::vector<Factory> build()
                            { bypass ("deess"), 1.0f }, { limDrive, 4.0f }, { limCeiling, -1.0f } },
                          [] (Values& v) { band (v, 4, 12000, 1.5f, true); }) });
 
-    f.push_back ({ "Streaming Master", "Balanced for streaming services: around -14 LUFS, -1 dBTP",
+    f.push_back ({ "Streaming Master", "Balanced for streaming services, at -1 dBTP; the assistant lands it on -14 LUFS",
                    make ({ { eqHpf, 25.0f }, { compOptoThr, -20.0f }, { compOptoGain, 1.5f }, { compVcaThr, -12.0f }, { compRatio, 1.0f }, { compAttack, 4.0f },
                            { tapeSpeed, 1.0f }, { tapeType, 1.0f }, { tapeWow, 10.0f }, { deessThr, -6.0f }, { limDrive, 7.0f }, { limCeiling, -1.0f } },
                          [] (Values& v) { band (v, 1, 300, -1.0f); band (v, 4, 12000, 1.5f, true); }) });
@@ -61,7 +61,7 @@ std::vector<Factory> build()
                    make ({ { tapeSpeed, 1.0f }, { tapeType, 1.0f }, { deessThr, -8.0f }, { deessRange, 6.0f }, { deessFreq, 5500.0f }, { limDrive, 5.0f } },
                          [] (Values& v) { band (v, 3, 4500, 1.0f); band (v, 4, 12000, 3.0f, true); }) });
 
-    f.push_back ({ "Club Master", "For big systems: mono lows, dense limiting near -8 LUFS",
+    f.push_back ({ "Club Master", "For big systems: mono lows and dense limiting",
                    make ({ { eqHpf, 28.0f }, { eqMono, 150.0f }, { compOptoThr, -22.0f }, { compOptoGain, 2.0f }, { compVcaThr, -16.0f }, { compRatio, 2.0f },
                            { compVcaGain, 3.0f }, { tapeSpeed, 0.0f }, { tapeType, 0.0f }, { tapeIn, 3.0f }, { limDrive, 14.0f }, { limStyle, 2.0f },
                            { limCeiling, -0.3f } },

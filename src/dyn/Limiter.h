@@ -62,23 +62,31 @@ private:
     static constexpr int kTaps = 32, kFirDelay = kTaps / 2;
     static constexpr double kMargin = 0.9954;   // -0.04 dB for what the reconstruction and the gain's movement leave
 
-    struct SlidingMin   // minimum of the last len values, O(1) per value
+    struct SlidingMin   // minimum of the last len values, O(1) per value (a monotonic deque in a ring)
     {
         std::vector<double> val;
-        std::vector<long> dq;
-        int len = 1, head = 0, tail = 0;
+        std::vector<long> at;
+        int len = 1, cap = 2, head = 0, tail = 0, count = 0;
         long idx = 0;
-        void init (int n) { len = n; val.assign ((size_t) n, 1.0); dq.assign ((size_t) n + 1, 0); head = tail = 0; idx = 0; }
+        void init (int n) { len = n; cap = n + 1; val.assign ((size_t) cap, 1.0); at.assign ((size_t) cap, 0); head = tail = count = 0; idx = 0; }
         double push (double v)
         {
-            const int Q = len + 1;
             const long id = idx++;
-            val[(size_t) (id % len)] = v;
-            while (tail != head && val[(size_t) (dq[(size_t) ((tail - 1 + Q) % Q)] % len)] >= v) tail = (tail - 1 + Q) % Q;
-            dq[(size_t) tail] = id;
-            tail = (tail + 1) % Q;
-            while (id - dq[(size_t) head] >= len) head = (head + 1) % Q;
-            return val[(size_t) (dq[(size_t) head] % len)];
+            // drop the newer values that are no smaller: they can never be the minimum again
+            while (count > 0)
+            {
+                const int back = tail == 0 ? cap - 1 : tail - 1;
+                if (val[(size_t) back] < v) break;
+                tail = back;
+                --count;
+            }
+            val[(size_t) tail] = v;
+            at[(size_t) tail] = id;
+            if (++tail == cap) tail = 0;
+            ++count;
+            // and the oldest once it has left the window
+            while (id - at[(size_t) head] >= len) { if (++head == cap) head = 0; --count; }
+            return val[(size_t) head];
         }
     };
     struct Box   // moving average over len samples

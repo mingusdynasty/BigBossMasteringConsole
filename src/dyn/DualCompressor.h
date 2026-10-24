@@ -1,17 +1,19 @@
 // Two-stage mastering compressor in the manner of the Shadow Hills Mastering Compressor: an optical
 // stage for slow, program-dependent levelling, then a discrete VCA stage for control, then a choice
-// of output transformer.
+// of output transformer (dyn/Transformer.h: flux-driven Jiles-Atherton cores).
 //
 // Optical stage: a soft-knee feed-forward cell whose release depends on its history, like an
 // electroluminescent panel and photocell: short bursts let go in about 60 ms, sustained compression
 // slows the release toward 1.5 s. Discrete stage: threshold, ratio 1.2:1 to 6:1 or Flood, six
 // attack and six recovery times, the sixth recovery being a dual (fast then slow) release.
 // Transformers: Nickel (clean), Iron (low-frequency second harmonic), Steel (low-frequency third
-// harmonic and weight). The two stages see the signal through an optional 90 Hz sidechain
+// harmonic; loud lows round off). Their distortion rises as the frequency falls, as on real iron. The two stages see the signal through an optional 90 Hz sidechain
 // high-pass, and both channels are always linked so the stereo image holds still.
 //
 // Voiced from the unit's published manual and descriptions, not measured from one.
 #pragma once
+
+#include "Transformer.h"
 
 #include <atomic>
 #include <cmath>
@@ -69,7 +71,7 @@ private:
 
     // gliding makeup and the transformer blend
     double optoGainLin = 1, vcaGainLin = 1, glide = 0;
-    double xfLow[2] {}, xfDcX[2] {}, xfDcY[2] {}, xfLowC = 0, xfDcR = 0;
+    TransformerCore cores[3];   // Nickel, Iron, Steel
     double xfWeight[3] { 1, 0, 0 };
 
     std::atomic<float> grOpto { 0 }, grVca { 0 };

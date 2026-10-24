@@ -167,6 +167,68 @@ int main()
         CHECK (m < 1e-12, "deess listen: %.3g left over with nothing removed", m);
     }
 
+    {   // the bands stay below the cap (16 kHz, 0.42 of the rate), apart, and in order, at any setting
+        for (double sr : { 44100.0, 48000.0, 96000.0 })
+            for (double lo : { 3000.0, 4500.0, 6000.0, 7000.0, 8000.0 })
+            {
+                double prev = 0;
+                bool ok = true;
+                for (int k = 0; k < bb::DeEsser::kBands; ++k)
+                {
+                    const double f = bb::DeEsser::bandFreq (lo, k, sr);
+                    if (f == 0) { ok = ok && k > 0; continue; }   // dropped: never the lowest
+                    ok = ok && f <= std::min (16000.0, 0.42 * sr) + 1e-9 && f > prev * std::pow (2.0, 0.25) - 1e-9;
+                    prev = f;
+                }
+                CHECK (ok, "deess %.0f: bands from %.0f Hz fit under the cap, a quarter octave apart or more", sr, lo);
+            }
+        CHECK (bb::DeEsser::bandFreq (4500, 3, 44100) > 12000 && bb::DeEsser::bandFreq (4500, 3, 44100) < 13000,
+               "deess: the default top band is unchanged (%.0f Hz)", bb::DeEsser::bandFreq (4500, 3, 44100));
+        CHECK (bb::DeEsser::bandFreq (8000, 3, 44100) == 0, "deess: at 8 kHz and 44.1 kHz the top band is dropped");
+    }
+
+    {   // changing mode while a steady "s" is being cut: the cut fades out and back, never steps
+        const double sr = 48000;
+        const size_t n = (size_t) sr;
+        std::vector<double> l (n), r (n);
+        for (size_t i = 0; i < n; ++i)
+        {
+            const double t = (double) i / sr;
+            double vow = 0;
+            for (int h = 1; h * 180 < 3000; ++h) vow += 0.1 / h * std::sin (2 * kPi * 180 * h * t);
+            l[i] = r[i] = std::min (1.0, t / 0.005) * (vow + 0.15 * std::sin (2 * kPi * 6364 * t));
+        }
+        const auto in = l;
+        bb::DeEsser d;
+        bb::DeEsser::Settings s;
+        s.thresholdDb = -12; s.rangeDb = 12;
+        d.setSettings (s);
+        d.prepare (sr, 64);
+        const size_t at = (size_t) (0.6 * sr);
+        double during = 0;
+        for (size_t pos = 0; pos < n; pos += 64)
+        {
+            if (pos == at) { s.mode = bb::DeEsser::Stereo; d.setSettings (s); }
+            d.process (l.data() + pos, r.data() + pos, 64);
+            if (pos == at - 64) for (int k = 0; k < bb::DeEsser::kBands; ++k) during = std::max (during, (double) d.reduction (k));
+        }
+        // the output minus the delayed input is what was cut: a steady tone, so its level in 0.5 ms
+        // windows must move smoothly through the switch
+        const int lat = d.latency();
+        const size_t win = (size_t) (0.0005 * sr);
+        auto level = [&] (size_t from)
+        {
+            double e = 0;
+            for (size_t i = from; i < from + win; ++i) { const double c = l[i] - in[i - (size_t) lat]; e += c * c; }
+            return std::sqrt (e / (double) win);
+        };
+        const double steady = level (at - 20 * win);
+        double jump = 0;   // the largest fall from one window to the next, as a share of the steady cut
+        for (size_t w0 = at - 4 * win; w0 < at + 80 * win; w0 += win) jump = std::max (jump, (level (w0) - level (w0 + win)) / steady);
+        CHECK (during > 3.0, "deess mode switch: the tone was being cut when the mode changed (%.1f dB)", during);
+        CHECK (jump < 0.3, "deess mode switch: what is removed fades rather than steps (%.0f%% of it in 0.5 ms)", 100 * jump);
+    }
+
     std::printf ("%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

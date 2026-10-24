@@ -7,6 +7,7 @@
 #include "chain/TapeModule.h"
 #include "eq/ClassAEq.h"
 #include "tape/TapeMachine.h"
+#include "dsp/Dither.h"
 
 #include <algorithm>
 #include <cmath>
@@ -366,8 +367,91 @@ static void testReorder()
     }
 }
 
+// the output's dither: on the word's grid, TPDF noise at the right level, shaped noise pushed up
+static void testDither()
+{
+    const double sr = 44100;
+    const int n = (int) sr * 2;
+    auto band = [&] (const std::vector<double>& e, double lo, double hi)   // mean power in a band, via DFT bins
+    {
+        double p = 0; int k = 0;
+        for (double f = lo; f < hi; f += 97.0)
+        {
+            double re = 0, im = 0;
+            for (int i = 0; i < n; ++i) { const double ph = 2 * kPi * f * i / sr; re += e[(size_t) i] * std::cos (ph); im += e[(size_t) i] * std::sin (ph); }
+            p += re * re + im * im; ++k;
+        }
+        return 10 * std::log10 (p / k);
+    };
+    std::vector<double> err[3];
+    for (int mode : { bb::Dither::Bits24, bb::Dither::Bits16, bb::Dither::Bits16Shaped })
+    {
+        bb::Dither d;
+        auto l = sine (sr, 997, 0.25, 2.0), r = sine (sr, 997, 0.25, 2.0);
+        const auto in = l;
+        for (int pos = 0; pos < n; pos += 512) d.process (l.data() + pos, r.data() + pos, std::min (512, n - pos), mode);
+        const double q = mode == bb::Dither::Bits24 ? 8388608.0 : 32768.0;
+        bool onGrid = true;
+        double e2 = 0, lr = 0;
+        std::vector<double> e ((size_t) n);
+        for (int i = 0; i < n; ++i)
+        {
+            onGrid = onGrid && std::abs (l[(size_t) i] * q - std::round (l[(size_t) i] * q)) < 1e-6;
+            e[(size_t) i] = (l[(size_t) i] - in[(size_t) i]) * q;   // in LSBs
+            e2 += e[(size_t) i] * e[(size_t) i];
+            lr += e[(size_t) i] * (r[(size_t) i] - in[(size_t) i]) * q;
+        }
+        const double rms = std::sqrt (e2 / n);
+        CHECK (onGrid, "dither %d: every sample is on the word's grid", mode);
+        if (mode != bb::Dither::Bits16Shaped)
+        {
+            // TPDF dither: the total error is 1/4 LSB^2 (three times undithered rounding's 1/12), 0.5 LSB rms
+            CHECK (std::abs (rms - 0.5) < 0.02, "dither %d: TPDF noise %.3f LSB rms (0.5 expected)", mode, rms);
+            CHECK (std::abs (lr / e2) < 0.02, "dither %d: the channels' noise is independent (correlation %.3f)", mode, lr / e2);
+        }
+        err[mode - 1] = e;
+    }
+    // shaped: less noise where the ear is most sensitive (1 - 5 kHz), more near the top of the band
+    const double flatMid = band (err[1], 1000, 5000), shapedMid = band (err[2], 1000, 5000);
+    const double flatTop = band (err[1], 17000, 21000), shapedTop = band (err[2], 17000, 21000);
+    CHECK (shapedMid < flatMid - 6, "dither shaped: %.1f dB less noise at 1-5 kHz", flatMid - shapedMid);
+    CHECK (shapedTop > flatTop + 6, "dither shaped: %.1f dB more noise at 17-21 kHz, where it is least audible", shapedTop - flatTop);
+}
+
+// bypassing the EQ fades to a dry signal in phase with it, so the top end doesn't dip during the fade
+static void testEqBypass()
+{
+    for (double sr : { 44100.0, 48000.0 })
+    {
+        bb::Chain chain;
+        chain.add (std::make_unique<bb::EqModule>());
+        chain.prepare (sr, 256);
+        const double hz = 15000;
+        auto l = sine (sr, hz, 0.5, 0.6), r = l;
+        const int n = (int) l.size();
+        for (int pos = 0; pos < n; pos += 256)
+        {
+            if (pos == (int) (0.3 * sr) / 256 * 256) chain.setBypassed (0, true);
+            chain.process (l.data() + pos, r.data() + pos, std::min (256, n - pos));
+        }
+        // the tone's level in 1 ms windows (its own DFT bin), through the fade
+        double lo = 1, hi = 0;
+        const int w = (int) (0.001 * sr);
+        for (int i = (int) (0.1 * sr); i + w < n; i += w / 2)
+        {
+            double re = 0, im = 0;
+            for (int k = i; k < i + w; ++k) { re += l[(size_t) k] * std::cos (2 * kPi * hz * k / sr); im += l[(size_t) k] * std::sin (2 * kPi * hz * k / sr); }
+            const double a = 2 * std::hypot (re, im) / w;
+            lo = std::min (lo, a); hi = std::max (hi, a);
+        }
+        CHECK (20 * std::log10 (hi / lo) < 0.2, "eq bypass at %.0f: 15 kHz holds its level through the fade (%.2f dB swing)", sr, 20 * std::log10 (hi / lo));
+    }
+}
+
 int main()
 {
+    testEqBypass();
+    testDither();
     testEq();
     testTape();
     testReorder();

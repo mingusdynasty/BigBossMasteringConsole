@@ -80,6 +80,12 @@ BigBossProcessor::BigBossProcessor()
     pInTrim  = apvts.getRawParameterValue (pid::inTrim);
     pVolume  = apvts.getRawParameterValue (pid::volume);
     pOutMono = apvts.getRawParameterValue (pid::outMono);
+    pLock    = apvts.getRawParameterValue (pid::outLock);
+    pDither  = apvts.getRawParameterValue (pid::outDither);
+    pLimitLast = apvts.getRawParameterValue (pid::limLast);
+
+    guardLimit = new bb::LimitModule();
+    guard.add (std::unique_ptr<bb::Module> (guardLimit));
 
     auto raw = [this] (const juce::String& pidStr) { return apvts.getRawParameterValue (pidStr); };
     for (int b = 0; b < bb::eq::kBands; ++b)
@@ -100,6 +106,13 @@ BigBossProcessor::BigBossProcessor()
                raw (pid::limTp), raw (pid::limLink) };
     pDeess = { raw (pid::deessThr), raw (pid::deessRange), raw (pid::deessFreq), raw (pid::deessRelease), raw (pid::deessMode),
                raw (pid::deessListen) };
+
+    assistantHost = std::make_unique<AssistantHost> (*this);
+}
+
+BigBossProcessor::~BigBossProcessor()
+{
+    assistantHost.reset();   // stops its worker before anything it uses goes
 }
 
 bb::DeEsser::Settings BigBossProcessor::deessSettings() const
@@ -142,6 +155,18 @@ bb::Limiter::Settings BigBossProcessor::limitSettings() const
     s.truePeak = pLimit.tp->load() > 0.5f;
     s.link = pLimit.link->load() / 100.0;
     return s;
+}
+
+namespace
+{
+// the CEILING LOCK's limiter: transparent, no drive, true peak, linked, at the BB-L1's ceiling
+bb::Limiter::Settings guardSettings (double ceilingDb)
+{
+    bb::Limiter::Settings s;
+    s.ceilingDb = ceilingDb;
+    s.style = bb::Limiter::Transparent;
+    return s;
+}
 }
 
 bb::eq::Settings BigBossProcessor::eqSettings() const
@@ -198,11 +223,17 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     deess->settings = deessSettings();
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     chain.prepare (sampleRate, block);
+    guardLimit->settings = guardSettings (pLimit.ceiling->load());
+    guard.setBypassed (0, pLock->load() < 0.5f);
+    guard.prepare (sampleRate, block);
+    overMeter.prepare (sampleRate, 2);
+    dither.reset();
     const int nch = juce::jmax (1, getTotalNumInputChannels());
     inMeters.prepare (sampleRate, nch);
     outMeters.prepare (sampleRate, nch);
 
-    latency = chain.latency();
+    // the guard's latency counts whether it is on or not, so switching it never moves anything in time
+    latency = chain.latency() + guard.latency();
     setLatencySamples (latency);
     int len = 1;
     while (len < latency + 1) len <<= 1;
@@ -214,20 +245,40 @@ void BigBossProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     inGain  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
     outGain = volumeGain (pVolume->load());
 
+    const juce::SpinLock::ScopedLockType hold (captureLock);
+    captureRequest.store (false);
     capturing.store (false);
     captureFull.store (false);
+    capturePos.store (0);
     for (auto& c : capture) c.assign ((size_t) (kCaptureSeconds * sampleRate), 0.0f);
 }
 
 void BigBossProcessor::reset()
 {
     chain.reset();
+    guard.reset();
+    overMeter.reset();
+    dither.reset();
     for (auto& l : bypassLine) std::fill (l.begin(), l.end(), 0.0);
+}
+
+int BigBossProcessor::limiterSlot() const
+{
+    return chain.slotOf ("limit");
+}
+
+bb::Chain::Order BigBossProcessor::constrained (bb::Chain::Order o) const
+{
+    if (pLimitLast->load (std::memory_order_relaxed) < 0.5f) return o;
+    const auto end = o.begin() + kNumSlots;
+    const auto it = std::find (o.begin(), end, limiterSlot());
+    if (it != end) std::rotate (it, it + 1, end);   // the limiter to the end, the rest kept in order
+    return o;
 }
 
 void BigBossProcessor::setOrder (const bb::Chain::Order& o)
 {
-    chain.setOrder (o);
+    chain.setOrder (constrained (o));
 }
 
 float BigBossProcessor::takePeakDb (bool output, int ch)
@@ -253,6 +304,27 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
     for (int s = 0; s < kNumSlots; ++s) chain.setBypassed (s, pBypass[(size_t) s]->load() > 0.5f);
     const double inTarget  = juce::Decibels::decibelsToGain ((double) pInTrim->load());
     const double outTarget = volumeGain (pVolume->load());
+    const double ceilingDb = pLimit.ceiling->load();
+    const bool lock = pLock->load() > 0.5f;
+    guardLimit->settings = guardSettings (ceilingDb);
+    guard.setBypassed (0, ! lock);
+    const int ditherMode = juce::roundToInt (pDither->load());
+    // STAY LAST, switched on (or an order set some other way): the limiter goes back to the end
+    if (pLimitLast->load() > 0.5f)
+    {
+        const auto o = chain.order();
+        if (o[(size_t) kNumSlots - 1] != limiterSlot()) chain.setOrder (constrained (o));
+    }
+    if (captureRequest.exchange (false))
+    {
+        capturePos.store (0, std::memory_order_relaxed);
+        captureFull.store (false, std::memory_order_relaxed);
+        capturing.store (true, std::memory_order_release);
+    }
+    // an output true peak this far over the ceiling lights the OVER lamp (the guard's own margin keeps
+    // it below this when CEILING LOCK is on)
+    const double overLimit = juce::Decibels::decibelsToGain (ceilingDb + 0.05);
+    float over = 0.0f, caught = 0.0f;
 
     T* outL = buffer.getWritePointer (0);
     T* outR = nIn > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -266,7 +338,7 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
 
         inMeters.process (l, outR ? r : l, k);
         notePeaks (inPeak, l, outR ? r : l, k);
-        if (capturing.load (std::memory_order_relaxed)) captureBlock (l, outR ? r : l, k);
+        if (capturing.load (std::memory_order_acquire)) captureBlock (l, outR ? r : l, k);
         delayDry (l, r, dryL.data(), dryR.data(), k);
 
         // trims glide linearly across the chunk
@@ -294,6 +366,17 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
             }
         }
 
+        // CEILING LOCK, then the word length: the last of the console
+        guard.process (l, r, k);
+        if (lock) caught = juce::jmax (caught, guardLimit->limiter.reduction());
+        dither.process (l, r, k, ditherMode);
+        {
+            const double* chs[2] { l, r };
+            overMeter.process (chs, k);
+            const double peak = juce::jmax (overMeter.takeBlockPeak (0), overMeter.takeBlockPeak (1));
+            if (peak > overLimit) over = juce::jmax (over, (float) juce::Decibels::gainToDecibels (peak) - (float) ceilingDb);
+        }
+
         // BYPASS ALL: an equal-gain raised-cosine crossfade to the delayed dry signal (the two are
         // time-aligned, so nothing combs while it moves)
         const bool bypassed = bypassAll.load (std::memory_order_relaxed);
@@ -315,6 +398,8 @@ void BigBossProcessor::processImpl (juce::AudioBuffer<T>& buffer)
         for (int i = 0; i < k; ++i) outL[off + i] = (T) l[i];
         if (outR) for (int i = 0; i < k; ++i) outR[off + i] = (T) r[i];
     }
+    if (over > overDb.load (std::memory_order_relaxed)) overDb.store (over, std::memory_order_relaxed);
+    if (caught > lockDb.load (std::memory_order_relaxed)) lockDb.store (caught, std::memory_order_relaxed);
 }
 
 void BigBossProcessor::delayDry (const double* l, const double* r, double* outL, double* outR, int n)
@@ -361,6 +446,8 @@ juce::AudioProcessorEditor* BigBossProcessor::createEditor() { return new BigBos
 
 void BigBossProcessor::captureBlock (const double* l, const double* r, int n)
 {
+    const juce::SpinLock::ScopedTryLockType hold (captureLock);
+    if (! hold.isLocked() || capture[0].empty()) return;
     // keep blocks with something in them (above -50 dBFS), so pauses don't count
     double peak = 0;
     for (int i = 0; i < n; ++i) peak = std::max ({ peak, std::abs (l[i]), std::abs (r[i]) });
@@ -380,11 +467,9 @@ void BigBossProcessor::captureBlock (const double* l, const double* r, int n)
 
 void BigBossProcessor::startCapture()
 {
-    if (capture[0].empty()) return;
-    capturing.store (false);
+    // the audio thread starts it at its next block, so a block already writing never races the reset
     captureFull.store (false);
-    capturePos.store (0);
-    capturing.store (true, std::memory_order_release);
+    captureRequest.store (true, std::memory_order_release);
 }
 
 float BigBossProcessor::captureProgress() const
@@ -394,6 +479,7 @@ float BigBossProcessor::captureProgress() const
 
 bool BigBossProcessor::takeCapture (std::vector<float>& l, std::vector<float>& r, double& rate)
 {
+    const juce::SpinLock::ScopedLockType hold (captureLock);
     if (! captureFull.exchange (false, std::memory_order_acquire)) return false;
     l = capture[0];
     r = capture[1];
@@ -420,20 +506,40 @@ presets::Values BigBossProcessor::currentValues() const
     return v;
 }
 
-void BigBossProcessor::applyValues (const presets::Values& values, bool othersToDefault)
+bool BigBossProcessor::sessionOnly (const juce::String& id)
+{
+    return id == pid::inTrim || id == pid::volume || id == pid::outMono || id == pid::outLock || id == pid::outDither
+        || id == pid::limLast;
+}
+
+void BigBossProcessor::applyValues (const presets::Values& values, bool othersToDefault, Apply how)
 {
     for (auto* p : getParameters())
     {
         auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p);
         if (rp == nullptr) continue;
+        if (how == Apply::Preset && sessionOnly (rp->getParameterID())) continue;
         const auto it = values.find (rp->getParameterID());
         if (it == values.end() && ! othersToDefault) continue;
         const float norm = it != values.end() ? rp->convertTo0to1 (it->second) : rp->getDefaultValue();
         if (std::abs (norm - rp->getValue()) < 1e-6f) continue;
-        rp->beginChangeGesture();
+        const bool gesture = how != Apply::Restore;
+        if (gesture) rp->beginChangeGesture();
         rp->setValueNotifyingHost (norm);
-        rp->endChangeGesture();
+        if (gesture) rp->endChangeGesture();
     }
+}
+
+juce::String BigBossProcessor::getPresetName() const
+{
+    const juce::SpinLock::ScopedLockType hold (presetNameLock);
+    return presetName;
+}
+
+void BigBossProcessor::setPresetName (const juce::String& name)
+{
+    const juce::SpinLock::ScopedLockType hold (presetNameLock);
+    presetName = name;
 }
 
 const juce::String BigBossProcessor::getProgramName (int i)
@@ -446,12 +552,12 @@ void BigBossProcessor::loadFactoryPreset (int i)
 {
     const auto& f = presets::factory();
     if (i < 0 || i >= (int) f.size()) return;
-    applyValues (f[(size_t) i].values, true);
+    applyValues (f[(size_t) i].values, true, Apply::Preset);
     bb::Chain::Order o {};
     for (int k = 0; k < kNumSlots; ++k) o[(size_t) k] = k;
-    chain.setOrder (o);
+    setOrder (o);
     currentFactory = i;
-    presetName = f[(size_t) i].name;
+    setPresetName (f[(size_t) i].name);
 }
 
 bool BigBossProcessor::saveUserPreset (const juce::String& name)
@@ -465,9 +571,16 @@ bool BigBossProcessor::saveUserPreset (const juce::String& name)
     auto xml = getXmlFromBinary (mb.getData(), (int) mb.getSize());
     if (xml == nullptr) return false;
     xml->setAttribute ("preset", clean);
+    xml->removeAttribute ("program");
+    // gain staging and the output belong to the session; a preset leaves them alone
+    for (auto* e = xml->getFirstChildElement(); e != nullptr;)
+    {
+        auto* next = e->getNextElement();
+        if (e->hasTagName ("PARAM") && sessionOnly (e->getStringAttribute ("id"))) xml->removeChildElement (e, true);
+        e = next;
+    }
     if (! xml->writeTo (dir.getChildFile (clean + presets::extension))) return false;
-    presetName = clean;
-    currentFactory = -1;
+    setPresetName (clean);
     return true;
 }
 
@@ -478,14 +591,13 @@ bool BigBossProcessor::loadUserPreset (const juce::File& file)
     presets::Values v;
     for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
         v[e->getStringAttribute ("id")] = (float) e->getDoubleAttribute ("value");
-    applyValues (v, true);
-    setOrderFromIds (xml->getStringAttribute ("order"));
-    presetName = file.getFileNameWithoutExtension();
-    currentFactory = -1;
+    applyValues (v, true, Apply::Preset);
+    setOrderFromIds (xml->getStringAttribute ("order"));   // STAY LAST, if on, keeps the limiter last
+    setPresetName (file.getFileNameWithoutExtension());
     return true;
 }
 
-void BigBossProcessor::setOrderFromIds (const juce::String& list)
+bool BigBossProcessor::setOrderFromIds (const juce::String& list, bb::Chain::Order* parsed)
 {
     // the order is saved by slot id, so adding slots in later versions keeps old sessions loading
     const auto ids = juce::StringArray::fromTokens (list, ",", "");
@@ -495,9 +607,12 @@ void BigBossProcessor::setOrderFromIds (const juce::String& list)
     for (const auto& id : ids)
         for (int s = 0; s < kNumSlots; ++s)
             if (id == kSlots[s].id && ! used[(size_t) s] && k < kNumSlots) { o[(size_t) k++] = s; used[(size_t) s] = true; }
+    if (k == 0) return false;
     for (int s = 0; s < kNumSlots; ++s)
         if (! used[(size_t) s]) o[(size_t) k++] = s;
-    chain.setOrder (o);
+    if (parsed != nullptr) *parsed = o;
+    else setOrder (o);
+    return true;
 }
 
 void BigBossProcessor::applyPlan (const bb::assist::Plan& p)
@@ -556,15 +671,16 @@ void BigBossProcessor::applyPlan (const bb::assist::Plan& p)
 
     for (int s = 0; s < kNumSlots; ++s) v[bypassId (s)] = p.bypass[(size_t) s] ? 1.0f : 0.0f;
     v[inTrim] = (float) p.inTrimDb;
+    v[volume] = 0.0f;   // the plan's loudness was rendered with the fader at 0 dB
     applyValues (v, false);
-    presetName = "Assistant";
-    currentFactory = -1;
+    setPresetName ("Assistant");
 }
 
 void BigBossProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
-    state.setProperty ("preset", presetName, nullptr);
+    state.setProperty ("preset", getPresetName(), nullptr);
+    state.setProperty ("program", currentFactory.load(), nullptr);
     juce::StringArray ids;
     const auto o = chain.order();
     for (int k = 0; k < kNumSlots; ++k) ids.add (kSlots[o[(size_t) k]].id);
@@ -579,20 +695,41 @@ void BigBossProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (xml == nullptr || ! xml->hasTagName (apvts.state.getType())) return;
     auto state = juce::ValueTree::fromXml (*xml);
 
-    setOrderFromIds (state.getProperty ("order").toString());
-    presetName = state.getProperty ("preset", "Init").toString();
-    currentFactory = -1;
-
+    const auto orderIds = state.getProperty ("order").toString();
+    setPresetName (state.getProperty ("preset", "Init").toString());
+    currentFactory = juce::jlimit (0, juce::jmax (0, getNumPrograms() - 1), (int) state.getProperty ("program", 0));
     state.removeProperty ("order", nullptr);
     state.removeProperty ("preset", nullptr);
-    apvts.replaceState (state);
+    state.removeProperty ("program", nullptr);
 
-    // replaceState only touches parameters whose stored value changed; one the host left between
-    // steps (a switch at 0.3, say) keeps that raw value unless it is set here
     presets::Values v;
     for (const auto& child : state)
         if (child.hasType ("PARAM")) v[child.getProperty ("id").toString()] = (float) child.getProperty ("value");
-    applyValues (v, false);
+    // a session from before STAY LAST keeps the order it was saved with
+    if (v.find (pid::limLast) == v.end())
+    {
+        bb::Chain::Order o {};
+        for (int k = 0; k < kNumSlots; ++k) o[(size_t) k] = k;
+        setOrderFromIds (orderIds, &o);
+        const bool last = o[(size_t) kNumSlots - 1] == limiterSlot();
+        v[pid::limLast] = last ? 1.0f : 0.0f;
+        juce::ValueTree param ("PARAM");
+        param.setProperty ("id", pid::limLast, nullptr);
+        param.setProperty ("value", v[pid::limLast], nullptr);
+        state.appendChild (param, nullptr);
+    }
+
+    apvts.replaceState (state);
+    // replaceState only touches parameters whose stored value changed; one the host left between
+    // steps (a switch at 0.3, say) keeps that raw value unless it is set here
+    applyValues (v, false, Apply::Restore);
+    // the order last, once STAY LAST has its saved value
+    if (! setOrderFromIds (orderIds))
+    {
+        bb::Chain::Order o {};
+        for (int k = 0; k < kNumSlots; ++k) o[(size_t) k] = k;
+        setOrder (o);
+    }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

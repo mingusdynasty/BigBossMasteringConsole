@@ -45,6 +45,7 @@ private:
     kit::AssistantPanel assistant;
     juce::TooltipWindow tooltips { this, 600 };
     int draggingSlot = -1, dragRow = -1;
+    bb::Chain::Order laidOut {};   // the order the modules were last laid out in
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BigBossEditor)
 };

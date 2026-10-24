@@ -1,26 +1,28 @@
 # Roadmap
 
-What comes after step 6, in the order it should be done. It comes out of the full review of 24 October 2026 (at `04b92eb`). Each phase is meant to be one PR. File references point at that commit.
+What comes after step 6, in the order it should be done. Ticked items are done on PR #7 (Phase A, plus dither from Phase B and the transformers from Phase C). It comes out of the full review of 24 October 2026 (at `04b92eb`). Each phase is meant to be one PR. File references point at that commit.
 
 ## Phase A: correctness and safety
 
-- [ ] **OVER lamp** on the OUTPUT unit: lit when the output's true peak goes above the limiter's ceiling. The fader (up to +12 dB) and MONO run after the limiter (`PluginProcessor.cpp`, `processImpl`), and modules can be dragged below it.
-- [ ] **CEILING LOCK** on the OUTPUT unit: a final true-peak guard at the limiter's ceiling, after the fader and MONO. On by default.
-- [ ] **Limiter stays last**: an optional order lock, on by default.
-- [ ] **The assistant includes the output stage**: its plan sets the fader to 0 dB, or its renders include the fader.
-- [ ] **Presets leave gain staging alone**: `in_trim`, `volume` and `out_mono` are neither saved in presets nor reset by them (`applyValues (…, true)`).
-- [ ] **The rack follows the host**: `tickAll` re-lays out the modules when `proc.getOrder()` changes and no drag is in progress (session restore, host undo, host program change).
-- [ ] **Restore state quietly**: no change gestures or host notifications from `setStateInformation`.
-- [ ] **`presetName` thread-safe**: move it into the state tree or guard it.
-- [ ] **The assistant moves to the processor**: capture, worker and plan are owned by the processor, the panel is a view, and closing the window doesn't drop or block anything. Fix the race between `startCapture` and `captureBlock`.
-- [ ] **Check the host program list in Reaper**: load a factory preset, tweak it, save, reopen. If the tweak is lost, report one program only.
-- [ ] **De-esser**: cap the top band below Nyquist (at 44.1 kHz it clamps from FREQ ≈ 7 kHz up), and fade the cuts on a mode change instead of clearing them.
-- [ ] **Preset blurbs**: drop the loudness promises that fixed drives can't keep (*Streaming Master*, *Club Master*).
-- [ ] **Tests**: `BB_BUILD_PLUGIN_TESTS` option (on with the plugin); state round trip; preset round trip; output ceiling with the fader up and a shuffled order; editor follows the order; golden renders of every factory preset.
+- [x] **OVER lamp** on the OUTPUT unit: lit when the output's true peak goes above the limiter's ceiling. The fader (up to +12 dB) and MONO run after the limiter (`PluginProcessor.cpp`, `processImpl`), and modules can be dragged below it.
+- [x] **CEILING LOCK** on the OUTPUT unit: a final true-peak guard at the limiter's ceiling, after the fader and MONO. On by default.
+- [x] **Limiter stays last**: an optional order lock, on by default.
+- [x] **The assistant includes the output stage**: its plan sets the fader to 0 dB, or its renders include the fader.
+- [x] **Presets leave gain staging alone**: `in_trim`, `volume` and `out_mono` are neither saved in presets nor reset by them (`applyValues (…, true)`).
+- [x] **The rack follows the host**: `tickAll` re-lays out the modules when `proc.getOrder()` changes and no drag is in progress (session restore, host undo, host program change).
+- [x] **Restore state quietly**: no change gestures or host notifications from `setStateInformation`.
+- [x] **`presetName` thread-safe**: move it into the state tree or guard it.
+- [x] **The assistant moves to the processor**: capture, worker and plan are owned by the processor, the panel is a view, and closing the window doesn't drop or block anything. Fix the race between `startCapture` and `captureBlock`.
+- [ ] **Check the host program list in Reaper**: load a factory preset, tweak it, save, reopen. The session now saves the program, so the tweak should stay; if it is lost, report one program only.
+- [x] **De-esser**: cap the top band below Nyquist (at 44.1 kHz it clamps from FREQ ≈ 7 kHz up), and fade the cuts on a mode change instead of clearing them.
+- [x] **Preset blurbs**: drop the loudness promises that fixed drives can't keep (*Streaming Master*, *Club Master*).
+- [x] **Limiter CPU**: vectorised FIR and an O(1) sliding minimum (3.2 → 2.1% at 48 kHz). All three styles still run, so a style switch stays safe.
+- [x] **EQ bypass**: the bypass path goes through the EQ's own oversampler, so a bypass fade no longer dips the top end.
+- [x] **Tests**: `BB_BUILD_PLUGIN_TESTS` option (on with the plugin); state round trip; preset round trip; output ceiling with the fader up and a shuffled order; editor follows the order; golden renders of every factory preset.
 
 ## Phase B: mastering essentials
 
-- [ ] **Dither and word length** on the OUTPUT unit: OFF / 24 / 16 bit, TPDF, optional noise shaping. Last in the chain, off by default.
+- [x] **Dither and word length** on the OUTPUT unit: OFF / 24 / 16 bit, TPDF, optional noise shaping. Last in the chain, off by default.
 - [ ] **Level-matched compare**: a MATCH key for BYPASS ALL, so a louder path doesn't win just by being louder.
 - [ ] **A/B/C/D compare slots** on the master section, with COPY.
 - [ ] **Codec preview** in the analyser: estimated true-peak overshoot after AAC or MP3.
@@ -29,7 +31,7 @@ What comes after step 6, in the order it should be done. It comes out of the ful
 
 ## Phase C: hardware authenticity
 
-- [ ] **BB-2 transformers modelled on flux** (port the iron model from chocolatefudgeverb's `PlateAmp`). Re-voice Iron and Steel, and re-measure.
+- [x] **BB-2 transformers modelled on flux** (port the iron model from chocolatefudgeverb's `PlateAmp`). Re-voice Iron and Steel, and re-measure.
 - [ ] **BB-2 opto cell, second pass** (two time constants, level-dependent attack); stereo / dual-mono switch.
 - [ ] **BB-80 extras**, each opt-in: crosstalk, azimuth error, hiss; a continuous bias trim; head bump that follows speed.
 - [ ] **BB-5 curves** re-voiced from museq sweeps or published plots, if any can be found.

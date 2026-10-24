@@ -211,6 +211,56 @@ static void testCompressor()
         CHECK (t5k[2] < 0.001 && t5k[1] < 0.001, "comp: 5 kHz THD steel %.4f%%, iron %.4f%%", 100 * t5k[2], 100 * t5k[1]);
     }
 
+    {   // the cores saturate from the bottom up: distortion falls with frequency; Iron is mostly 2nd
+        // harmonic, Steel 3rd; and switching transformers mid-note crossfades without a click
+        auto thdAt = [&] (int x, double hz, double amp, double* h2 = nullptr, double* h3 = nullptr)
+        {
+            bb::DualCompressor::Settings s;
+            s.opto = s.vca = false; s.transformer = x;
+            auto l = sine (sr, hz, amp, 2.0), r = l;
+            run (s, l, r);
+            const size_t st = l.size() / 2;
+            const double f = harmonic (l, sr, hz, 1, st);
+            if (h2) *h2 = harmonic (l, sr, hz, 2, st) / f;
+            if (h3) *h3 = harmonic (l, sr, hz, 3, st) / f;
+            return thd (l, sr, hz, st);
+        };
+        for (int x = 1; x < 3; ++x)
+        {
+            const double a = thdAt (x, 40, 0.5), b = thdAt (x, 160, 0.5), c = thdAt (x, 640, 0.5);
+            CHECK (a > 1.5 * b && b > 1.5 * c, "comp: %s distortion falls with frequency (40 Hz %.3f%%, 160 Hz %.3f%%, 640 Hz %.3f%%)",
+                   x == 1 ? "iron" : "steel", 100 * a, 100 * b, 100 * c);
+        }
+        double i2, i3, s2, s3;
+        thdAt (1, 50, 0.5, &i2, &i3);
+        thdAt (2, 50, 0.5, &s2, &s3);
+        CHECK (i2 > i3, "comp: iron is mostly 2nd harmonic (H2 %.3f%%, H3 %.3f%%)", 100 * i2, 100 * i3);
+        CHECK (s3 > 10 * s2, "comp: steel is 3rd harmonic (H2 %.4f%%, H3 %.3f%%)", 100 * s2, 100 * s3);
+        double quiet = 0;
+        for (int x = 0; x < 3; ++x) quiet = std::max (quiet, thdAt (x, 50, 0.02));
+        CHECK (quiet < 0.0005, "comp: every core is clean on a quiet low note (worst %.4f%%)", 100 * quiet);
+
+        // switch Nickel -> Steel -> Iron on a held 80 Hz note
+        bb::DualCompressor c;
+        bb::DualCompressor::Settings s;
+        s.opto = s.vca = false;
+        c.setSettings (s);
+        c.prepare (sr, 256);
+        auto l = sine (sr, 80, 0.5, 1.5), r = l;
+        const auto in = l;
+        for (size_t pos = 0; pos < l.size(); pos += 256)
+        {
+            if (pos == (size_t) (0.5 * sr) / 256 * 256) { s.transformer = bb::DualCompressor::Steel; c.setSettings (s); }
+            if (pos == (size_t) (1.0 * sr) / 256 * 256) { s.transformer = bb::DualCompressor::Iron; c.setSettings (s); }
+            const int n = (int) std::min<size_t> (256, l.size() - pos);
+            c.process (l.data() + pos, r.data() + pos, n);
+        }
+        double worst = 0;   // the largest sample-to-sample change of what the core adds
+        for (size_t i = (size_t) (0.2 * sr); i < l.size(); ++i)
+            worst = std::max (worst, std::abs ((l[i] - in[i]) - (l[i - 1] - in[i - 1])));
+        CHECK (worst < 0.002, "comp: switching transformers is smooth (largest step in the added colour %.5f)", worst);
+    }
+
     {   // sidechain high-pass: a loud 40 Hz note drives the compressor less
         double gr[2];
         for (int hpf = 0; hpf < 2; ++hpf)

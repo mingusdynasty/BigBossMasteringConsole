@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(BB_BUILD_PLUGIN "Build the JUCE plugin" ON)
 option(BB_BUILD_TESTS  "Build the engine tests and fuzzer" ON)
 option(BB_BUILD_SNAPSHOT "Build the UI snapshot tool (renders the console to a PNG)" OFF)
+option(BB_BUILD_PLUGIN_TESTS "Build the plugin tests (processor, state, presets, editor)" ON)
 
 # ---------------------------------------------------------------- engine (no JUCE dependency)
 # src/dsp is shared with mingusdynasty/chocolatefudgeverb (namespace cf); keep it in step with that repo.
@@ -85,6 +86,7 @@ if(BB_BUILD_PLUGIN)
     set(BB_PLUGIN_SOURCES
         src/plugin/PluginProcessor.cpp
         src/plugin/PluginEditor.cpp
+        src/plugin/AssistantHost.cpp
         src/plugin/Params.cpp src/plugin/Presets.cpp
         src/plugin/ui/Look.cpp
         src/plugin/ui/MeterPanel.cpp
@@ -120,7 +122,9 @@ if(BB_BUILD_PLUGIN)
             JucePlugin_Name="Big Boss Mastering Console")
         target_link_libraries(bb_snapshot PRIVATE bb_engine BigBossFonts juce::juce_audio_utils juce::juce_dsp
             juce::juce_recommended_config_flags)
+    endif()
 
+    if(BB_BUILD_PLUGIN_TESTS AND BB_BUILD_TESTS)
         juce_add_console_app(bb_plugin_tests PRODUCT_NAME "bb_plugin_tests")
         target_sources(bb_plugin_tests PRIVATE tests/PluginTests.cpp ${BB_PLUGIN_SOURCES})
         target_include_directories(bb_plugin_tests PRIVATE src)
@@ -128,6 +132,6 @@ if(BB_BUILD_PLUGIN)
             JucePlugin_Name="Big Boss Mastering Console")
         target_link_libraries(bb_plugin_tests PRIVATE bb_engine BigBossFonts juce::juce_audio_utils juce::juce_dsp
             juce::juce_recommended_config_flags)
-        add_test(NAME plugin COMMAND bb_plugin_tests)
+        add_test(NAME plugin COMMAND bb_plugin_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/presets.txt)
     endif()
 endif()

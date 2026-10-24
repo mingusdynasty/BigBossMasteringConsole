@@ -495,8 +495,8 @@ void BandLadders::paint (juce::Graphics& g)
     }
 }
 
-DeEssPanel::DeEssPanel (Apvts& s, const bb::DeEsser& d, std::function<double()> lowest)
-    : Panel (s), deesser (d), lowestBandHz (std::move (lowest))
+DeEssPanel::DeEssPanel (Apvts& s, const bb::DeEsser& d, std::function<double()> lowest, std::function<double()> rate)
+    : Panel (s), deesser (d), lowestBandHz (std::move (lowest)), sampleRate (std::move (rate))
 {
     power = &addPower (pid::bypass ("deess"));
     threshold = &addKnob (pid::deessThr, KnobStyle::neveGrey, 52, "Threshold, in dB of band energy over the voice body (300 Hz to 3 kHz)");
@@ -512,11 +512,16 @@ DeEssPanel::DeEssPanel (Apvts& s, const bb::DeEsser& d, std::function<double()> 
 void DeEssPanel::tick (float seconds)
 {
     for (int k = 0; k < bb::DeEsser::kBands; ++k) ladders.push (k, deesser.reduction (k), seconds);
-    if (lowestBandHz != nullptr)
+    if (lowestBandHz != nullptr && sampleRate != nullptr)
     {
         const auto f = lowestBandHz();
+        const auto sr = sampleRate();
         for (int k = 0; k < bb::DeEsser::kBands; ++k)
-            ladders.names[(size_t) k] = juce::String (bb::DeEsser::bandFreq (f, k) / 1000.0, 1) + "k";
+        {
+            // a band with no room below the top of the audio band is dropped
+            const auto hz = bb::DeEsser::bandFreq (f, k, sr);
+            ladders.names[(size_t) k] = hz > 0 ? juce::String (hz / 1000.0, 1) + "k" : juce::String::fromUTF8 ("\xe2\x80\x94");
+        }
     }
 }
 
@@ -627,6 +632,8 @@ LimitPanel::LimitPanel (Apvts& s, bb::Limiter& lim, std::function<bb::Limiter::S
     release = &addKnob (pid::limRelease, KnobStyle::dbxBlack, 36, "Release, 1 ms to 1 s, when AUTO is off");
     truePeak = &addSwitch (pid::limTp, ButtonStyle::dbxPush, "TRUE PK", "True-peak detection (8x reconstruction), or sample peaks only");
     link = &addKnob (pid::limLink, KnobStyle::dbxBlack, 36, "Stereo link, 0 to 100%");
+    stayLast = &addSwitch (pid::limLast, ButtonStyle::dbxPush, "LAST",
+                           "Stay last: keep the limiter at the end of the chain, whatever order the modules are dragged into");
     addAndMakeVisible (history);
     addAndMakeVisible (meter);
 }
@@ -652,6 +659,7 @@ void LimitPanel::resized()
     placeKnob (*drive, { 210, 60 });
     placeKnob (*ceiling, { 306, 60 });
     style->setBounds (356, 18, 64, 72);
+    stayLast->button->setBounds (356, 94, 64, 16);
     autoRel->button->setBounds (440, 18, 52, 18);
     placeKnob (*release, { 466, 72 });
     truePeak->button->setBounds (510, 18, 60, 18);
@@ -689,6 +697,9 @@ OutputPanel::OutputPanel (BigBossProcessor& p)
     mono = &addSwitch (pid::outMono, ButtonStyle::consoleKey, "MONO",
                        "Sum the output to mono, after the fader, to hear how the master holds up on one speaker. "
                        "It changes what is rendered too, so switch it off before you bounce.");
+    lock = &addSwitch (pid::outLock, ButtonStyle::consoleKey, "CEIL LOCK",
+                       "Ceiling lock: a last true-peak guard at the BB-L1's ceiling, after the fader and MONO, so nothing "
+                       "leaves the console above it. The lamp below lights amber while it catches, red if the output goes over.");
 
     fader.setDoubleClickReturnValue (true, 0.0);
     fader.setTooltip ("Output volume, after the last module. Automate it for rides and fades. Double-click for 0 dB.");
@@ -697,6 +708,18 @@ OutputPanel::OutputPanel (BigBossProcessor& p)
     if (auto* param = p.apvts.getParameter (pid::volume))
         fader.textFromValueFunction = [param] (double v) { return param->getText (param->convertTo0to1 ((float) v), 16); };
     addAndMakeVisible (fader);
+
+    // the dither's choices, in the parameter's own order (ComboBoxAttachment counts from item 1)
+    if (auto* param = dynamic_cast<juce::AudioParameterChoice*> (p.apvts.getParameter (pid::outDither)))
+        dither.addItemList (param->choices, 1);
+    ditherAttachment = std::make_unique<Apvts::ComboBoxAttachment> (p.apvts, pid::outDither, dither);
+    dither.setTooltip ("Word length of what leaves the console: dither to 24 or 16 bits (TPDF), or 16 bits noise-shaped. "
+                       "Use it when you bounce to that word length; leave it OFF for a float or 32-bit file.");
+    dither.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff0b0b0b));
+    dither.setColour (juce::ComboBox::textColourId, juce::Colour (0xffff9a3c));
+    dither.setColour (juce::ComboBox::outlineColourId, juce::Colour (0xff3a3a3a));
+    dither.setColour (juce::ComboBox::arrowColourId, juce::Colour (0xffbdbdbd));
+    addAndMakeVisible (dither);
     addAndMakeVisible (inMeter);
     addAndMakeVisible (outMeter);
 
@@ -714,8 +737,18 @@ OutputPanel::OutputPanel (BigBossProcessor& p)
     addAndMakeVisible (analyserKey);
 }
 
-void OutputPanel::tick (float)
+void OutputPanel::tick (float seconds)
 {
+    if (proc.takeOverDb() > 0.0f) overHold = 1.0f;
+    if (proc.takeLockDb() > 0.05f) lockHold = 1.0f;
+    overHold = juce::jmax (0.0f, overHold - seconds);
+    lockHold = juce::jmax (0.0f, lockHold - seconds);
+    const int lamp = overHold > 0 ? 2 : (lockHold > 0 ? 1 : 0);
+    if (lamp != shownLamp)
+    {
+        shownLamp = lamp;
+        repaint (768, 80, 124, 24);
+    }
     inMeter.tick();
     outMeter.tick();
     const auto& rd = proc.outMeters.readings;
@@ -735,7 +768,9 @@ void OutputPanel::resized()
     analyserKey.setBounds (178, 22, 92, 22);
     mono->button->setBounds (178, 52, 92, 22);
     placeKnob (*trim, { 330, 62 });
-    fader.setBounds (400, 46, 440, 44);
+    fader.setBounds (392, 46, 360, 44);
+    lock->button->setBounds (772, 18, 112, 22);
+    dither.setBounds (772, 52, 112, 20);
     inMeter.setBounds (900, 18, 196, 16);
     outMeter.setBounds (900, 42, 196, 16);
     readout.setBounds (1104, 28, 64, 22);
@@ -766,6 +801,21 @@ void OutputPanel::paint (juce::Graphics& g)
         const auto label = db <= pid::volumeMinDb ? juce::String::fromUTF8 ("-\xe2\x88\x9e") : (db > 0 ? "+" : "") + juce::String ((int) db);
         g.drawText (label, juce::Rectangle<float> (30, 10).withCentre ({ x, track.getY() - 17.0f }), juce::Justification::centred);
     }
+
+    drawEngraved (g, "DITHER", { 772, 73, 112, 10 }, consoleInk.withAlpha (0.7f), 7.0f, true, juce::Justification::left);
+
+    // the OVER lamp
+    const auto lampAt = juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ 780.0f, 93.0f });
+    const auto lit = shownLamp == 2 ? juce::Colour (0xffe5352b) : juce::Colour (0xfff2a43a);
+    g.setColour (shownLamp > 0 ? lit : juce::Colour (0xff1a1a1a));
+    g.fillEllipse (lampAt);
+    if (shownLamp > 0)
+    {
+        g.setColour (lit.withAlpha (0.3f));
+        g.fillEllipse (lampAt.expanded (3.0f));
+    }
+    drawEngraved (g, shownLamp == 1 ? "LOCK CATCHING" : "OVER", { 790, 87, 96, 12 }, consoleInk, 7.5f, true, juce::Justification::left);
+    rule (g, 760, consoleInk);
 
     drawEngraved (g, "IN", { 866, 18, 30, 16 }, consoleInk, 8.0f, true, juce::Justification::right);
     drawEngraved (g, "OUT", { 866, 42, 30, 16 }, consoleInk, 8.0f, true, juce::Justification::right);
@@ -847,7 +897,7 @@ void MasterPanel::stepPreset (int delta)
     const int total = (int) f.size() + user.size();
     int at = proc.getCurrentProgram();
     for (int i = 0; i < user.size(); ++i)
-        if (user[i].getFileNameWithoutExtension() == proc.presetName) at = (int) f.size() + i;
+        if (user[i].getFileNameWithoutExtension() == proc.getPresetName()) at = (int) f.size() + i;
     const int to = ((at + delta) % total + total) % total;
     if (to < (int) f.size()) proc.loadFactoryPreset (to);
     else proc.loadUserPreset (user[to - (int) f.size()]);
@@ -859,12 +909,12 @@ void MasterPanel::showPresetMenu()
     juce::PopupMenu menu, factoryMenu, userMenu;
     const auto& f = presets::factory();
     for (int i = 0; i < (int) f.size(); ++i)
-        menu.addItem (1 + i, f[(size_t) i].name, true, proc.presetName == f[(size_t) i].name);
+        menu.addItem (1 + i, f[(size_t) i].name, true, proc.getPresetName() == f[(size_t) i].name);
     const auto user = presets::userPresets();
     menu.addSeparator();
     if (user.isEmpty()) menu.addItem (-1, "(no presets of your own yet: press SAVE)", false);
     for (int i = 0; i < user.size(); ++i)
-        menu.addItem (1000 + i, user[i].getFileNameWithoutExtension(), true, proc.presetName == user[i].getFileNameWithoutExtension());
+        menu.addItem (1000 + i, user[i].getFileNameWithoutExtension(), true, proc.getPresetName() == user[i].getFileNameWithoutExtension());
     menu.addSeparator();
     menu.addItem (2000, "Save as...");
     menu.addItem (2001, "Open the presets folder");
@@ -891,7 +941,7 @@ void MasterPanel::savePreset()
 {
     saveDialog = std::make_unique<juce::AlertWindow> ("Save preset", "Name it. A preset with the same name is replaced.",
                                                       juce::MessageBoxIconType::NoIcon, this);
-    saveDialog->addTextEditor ("name", proc.presetName == "Init" ? juce::String() : proc.presetName);
+    saveDialog->addTextEditor ("name", proc.getPresetName() == "Init" ? juce::String() : proc.getPresetName());
     saveDialog->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
     saveDialog->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     juce::Component::SafePointer<MasterPanel> safe (this);
@@ -917,9 +967,9 @@ juce::String MasterPanel::getTooltip()
 void MasterPanel::tick (float)
 {
     const bool lamp = assistantNews != nullptr && assistantNews();
-    if (proc.presetName != shownPreset || lamp != shownLamp)
+    if (proc.getPresetName() != shownPreset || lamp != shownLamp)
     {
-        shownPreset = proc.presetName;
+        shownPreset = proc.getPresetName();
         shownLamp = lamp;
         repaint();
     }
@@ -978,7 +1028,7 @@ void MasterPanel::paint (juce::Graphics& g)
 
 // ===================================================================== the assistant
 
-AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
+AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p), host (p.assistant())
 {
     for (size_t i = 0; i < goalKeys.size(); ++i)
     {
@@ -987,8 +1037,8 @@ AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
         setStyle (k, ButtonStyle::consoleKey);
         k.setRadioGroupId (0x6b6f);
         k.setClickingTogglesState (true);
-        k.setToggleState (i == 0, juce::dontSendNotification);
-        k.onClick = [this, i] { if (goalKeys[i].getToggleState()) goal = kGoals[i]; };
+        k.setToggleState (kGoals[i] == host.getGoal(), juce::dontSendNotification);
+        k.onClick = [this, i] { if (goalKeys[i].getToggleState()) host.setGoal (kGoals[i]); };
         addAndMakeVisible (k);
     }
     goalKeys[0].setTooltip ("Goal: streaming services, -14 LUFS and -1 dBTP");
@@ -1004,22 +1054,13 @@ AssistantPanel::AssistantPanel (BigBossProcessor& p) : Panel (p.apvts), proc (p)
     }
     listenKey.setTooltip ("Play your mix (its loudest part is best) and press LISTEN: the assistant listens for 10 seconds, "
                           "then suggests settings for the goal");
-    applyKey.setTooltip ("Use the assistant's settings");
+    applyKey.setTooltip ("Use the assistant's settings (the fader goes to 0 dB, as the plan was measured)");
     undoKey.setTooltip ("Put back the settings from before APPLY");
     closeKey.setTooltip ("Fold the assistant away; it keeps listening or working if it was");
-    listenKey.onClick = [this] { listen(); };
-    applyKey.onClick = [this] { apply(); };
-    undoKey.onClick = [this] { undo(); };
+    listenKey.onClick = [this] { host.listen(); };
+    applyKey.onClick = [this] { host.apply(); };
+    undoKey.onClick = [this] { if (host.undo() && onOrderChanged) onOrderChanged(); };
     closeKey.onClick = [this] { if (onClose) onClose(); };
-    applyKey.setEnabled (false);
-    undoKey.setEnabled (false);
-}
-
-AssistantPanel::~AssistantPanel()
-{
-    cancel.store (true);
-    if (worker.joinable()) worker.join();
-    if (state == State::Listening) proc.cancelCapture();
 }
 
 void AssistantPanel::resized()
@@ -1032,87 +1073,17 @@ void AssistantPanel::resized()
     statusLcd = { 170, 44, getWidth() - 184, 62 };
 }
 
-void AssistantPanel::listen()
+void AssistantPanel::tick (float)
 {
-    if (state == State::Listening)   // pressed again: stop
-    {
-        proc.cancelCapture();
-        state = State::Idle;
-        return;
-    }
-    if (state == State::Thinking) return;
-    plan.reset();
-    applyKey.setEnabled (false);
-    proc.startCapture();
-    state = State::Listening;
-}
-
-void AssistantPanel::apply()
-{
-    if (plan == nullptr) return;
-    before = proc.currentValues();
-    beforePreset = proc.presetName;
-    beforeOrder = proc.getOrder();
-    proc.applyPlan (*plan);
-    state = State::Applied;
-    applyKey.setEnabled (false);
-    undoKey.setEnabled (true);
-}
-
-void AssistantPanel::undo()
-{
-    if (before.empty()) return;
-    proc.applyValues (before, false);
-    proc.setOrder (beforeOrder);
-    proc.presetName = beforePreset;
-    before.clear();
-    undoKey.setEnabled (false);
-    applyKey.setEnabled (plan != nullptr);
-    state = plan != nullptr ? State::Ready : State::Idle;
-    if (onOrderChanged) onOrderChanged();
-}
-
-void AssistantPanel::tick (float seconds)
-{
-    if (state == State::Listening)
-    {
-        std::vector<float> l, r;
-        double rate = 0;
-        if (proc.takeCapture (l, r, rate))
-        {
-            state = State::Thinking;
-            thinkingFor = 0;
-            cancel.store (false);
-            workerDone.store (false);
-            if (worker.joinable()) worker.join();
-            const auto g = goal;
-            const auto order = proc.assistOrder();
-            worker = std::thread ([this, l = std::move (l), r = std::move (r), rate, g, order]
-            {
-                plan = std::make_unique<bb::assist::Plan> (bb::assist::plan (l, r, rate, g, order, &cancel));
-                workerDone.store (true, std::memory_order_release);
-            });
-        }
-        else if (! proc.isCapturing())
-            state = State::Idle;   // stopped, or the host re-prepared
-    }
-    else if (state == State::Thinking)
-    {
-        thinkingFor += seconds;
-        if (workerDone.load (std::memory_order_acquire))
-        {
-            worker.join();
-            const bool ok = plan != nullptr && plan->outLufs > -100.0;
-            state = ok ? State::Ready : State::Failed;
-            applyKey.setEnabled (ok);
-        }
-    }
-    listenKey.setToggleState (state == State::Listening, juce::dontSendNotification);
+    const auto now = host.getState();
+    applyKey.setEnabled (host.canApply());
+    undoKey.setEnabled (host.canUndo());
+    listenKey.setToggleState (now == State::Listening, juce::dontSendNotification);
     for (auto* k : { &applyKey, &undoKey }) k->setAlpha (k->isEnabled() ? 1.0f : 0.4f);
     // the faceplate only redraws when something on it moves, and only while it is open
-    const bool changed = state != shownState;
-    shownState = state;
-    if (isVisible() && (changed || state == State::Listening || state == State::Thinking)) repaint();
+    const bool changed = now != shownState;
+    shownState = now;
+    if (isVisible() && (changed || host.busy())) repaint();
 }
 
 void AssistantPanel::paint (juce::Graphics& g)
@@ -1143,7 +1114,9 @@ void AssistantPanel::paint (juce::Graphics& g)
         g.drawText (s, text.removeFromTop ((int) h + 3), juce::Justification::centredLeft, true);
     };
     const auto dim = lcdAmber.withAlpha (0.6f);
-    switch (state)
+    const auto now = host.getState();
+    const auto plan = host.plan();
+    switch (now)
     {
         case State::Idle:
             line ("Not sure where to start? Pick a goal, play the loudest part of your mix and press LISTEN.");
@@ -1167,16 +1140,17 @@ void AssistantPanel::paint (juce::Graphics& g)
             break;
         }
         case State::Thinking:
-            line ("Working it out" + juce::String::repeatedString (".", 1 + (int) (thinkingFor * 3) % 3));
+            line ("Working it out" + juce::String::repeatedString (".", 1 + (int) (host.thinkingSeconds() * 3) % 3));
             line ("Measuring the mix, then trying the settings on what it heard.", 10.5f, dim);
             break;
         case State::Ready:
         case State::Applied:
         {
+            if (plan == nullptr) break;
             const auto& p = *plan;
-            line (juce::String (state == State::Applied ? "Applied: " : "Ready: ") + juce::String (p.outLufs, 1) + " LUFS, "
+            line (juce::String (now == State::Applied ? "Applied: " : "Ready: ") + juce::String (p.outLufs, 1) + " LUFS, "
                   + juce::String (p.outTruePeak, 1) + " dBTP (the mix came in at " + juce::String (p.in.integrated, 1) + " LUFS). "
-                  + (state == State::Applied ? "UNDO puts your settings back." : "Press APPLY to use it."));
+                  + (now == State::Applied ? "UNDO puts your settings back." : "Press APPLY to use it."));
             juce::StringArray notes;
             for (const auto& n : p.notes) notes.add (n);
             g.setColour (dim);

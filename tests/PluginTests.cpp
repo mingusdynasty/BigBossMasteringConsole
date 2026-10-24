@@ -1,8 +1,19 @@
 // Plugin-level tests: the processor as a host drives it (JUCE). Run via ctest.
+//
+//   bb_plugin_tests <golden file>           checks the factory presets' renders against it
+//   bb_plugin_tests <golden file> --write   writes it (after a deliberate change to the sound)
+#include "plugin/PluginEditor.h"
 #include "plugin/PluginProcessor.h"
+#include "plugin/Params.h"
+#include "plugin/rack/Panels.h"
+#include "meter/TruePeak.h"
+
+#include <juce_dsp/juce_dsp.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <map>
 #include <vector>
 
 static int failures = 0, checks = 0;
@@ -52,9 +63,134 @@ static double maxD4 (const std::vector<float>& out, int from, int to)
     return worst;
 }
 
-int main()
+static void set (BigBossProcessor& p, const juce::String& id, float plain)
+{
+    auto* param = p.apvts.getParameter (id);
+    param->setValueNotifyingHost (param->convertTo0to1 (plain));
+}
+static float get (BigBossProcessor& p, const juce::String& id)
+{
+    auto* param = p.apvts.getParameter (id);
+    return param->convertFrom0to1 (param->getValue());
+}
+
+// a short, deterministic mix (kick, bass, a noisy pad, hats), the same on every platform: its noise is
+// our own generator, not the standard library's distributions
+struct TestMix
+{
+    std::uint32_t rng = 0x2545f491u;
+    double t = 0, padL = 0, padR = 0, hp = 0;
+    double noise()   // about unit variance
+    {
+        double sum = 0;
+        for (int k = 0; k < 4; ++k)
+        {
+            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+            sum += (double) rng / 4294967296.0 - 0.5;
+        }
+        return sum * 1.732;
+    }
+    void fill (juce::AudioBuffer<float>& buf, double sr)
+    {
+        for (int i = 0; i < buf.getNumSamples(); ++i, t += 1 / sr)
+        {
+            const double beat = std::fmod (t, 0.5), bar = std::fmod (t, 2.0);
+            const double kick = 0.55 * std::exp (-beat * 18) * std::sin (2 * kPi * (50 + 120 * std::exp (-beat * 40)) * beat);
+            const double bass = 0.18 * std::sin (2 * kPi * (bar < 1 ? 55 : 41.2) * t);
+            padL += (0.05 * noise() - padL) * 0.02; padR += (0.05 * noise() - padR) * 0.02;
+            const double n = noise(); hp += (n - hp) * 0.3;
+            const double ph = std::fmod (t + 0.25, 0.5);
+            const double hat = ph < 0.04 ? 0.05 * (n - hp) * std::exp (-ph * 60) : 0;
+            buf.setSample (0, i, (float) (kick + bass + 3 * padL + hat));
+            buf.setSample (1, i, (float) (kick + bass + 3 * padR + 0.7 * hat));
+        }
+    }
+};
+
+// counts the change gestures a processor sends its host
+struct GestureCounter final : juce::AudioProcessorListener
+{
+    int gestures = 0;
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override {}
+    void audioProcessorParameterChangeGestureBegin (juce::AudioProcessor*, int) override { ++gestures; }
+};
+
+template <typename T> static T* findChild (juce::Component& c)
+{
+    for (auto* child : c.getChildren())
+    {
+        if (auto* t = dynamic_cast<T*> (child)) return t;
+        if (auto* t = findChild<T> (*child)) return t;
+    }
+    return nullptr;
+}
+
+// a factory preset's render of the test mix: integrated loudness, true peak, and the level in six bands
+struct Render
+{
+    double lufs = -200, truePeak = -200;
+    std::array<double, 6> bands {};
+};
+static constexpr double kBandEdges[7] = { 20, 100, 300, 1000, 3000, 8000, 20000 };
+
+static Render renderPreset (int preset)
+{
+    BigBossProcessor p;
+    p.setPlayConfigDetails (2, 2, kSr, kBlock);
+    p.prepareToPlay (kSr, kBlock);
+    p.loadFactoryPreset (preset);
+    p.reset();
+    TestMix mix;
+    juce::AudioBuffer<float> buf (2, kBlock);
+    juce::MidiBuffer midi;
+    constexpr int kFft = 1 << 14;
+    std::vector<float> tail;
+    bb::TruePeak tp;
+    tp.prepare (kSr, 2);
+    const int blocks = (int) (8.0 * kSr / kBlock);
+    for (int k = 0; k < blocks; ++k)
+    {
+        mix.fill (buf, kSr);
+        p.processBlock (buf, midi);
+        if (k * kBlock >= (int) kSr)   // after the first second, which settles the dynamics
+        {
+            std::vector<double> l (buf.getReadPointer (0), buf.getReadPointer (0) + kBlock), r (buf.getReadPointer (1), buf.getReadPointer (1) + kBlock);
+            const double* chs[2] { l.data(), r.data() };
+            tp.process (chs, kBlock);
+            for (int i = 0; i < kBlock; ++i) tail.push_back (0.5f * (buf.getSample (0, i) + buf.getSample (1, i)));
+        }
+    }
+    Render out;
+    out.lufs = p.outMeters.readings.integrated.load();
+    out.truePeak = juce::Decibels::gainToDecibels (juce::jmax (tp.heldPeak (0), tp.heldPeak (1)), -200.0);
+    // band levels: Hann-windowed FFTs of the mid, averaged, power summed per band
+    juce::dsp::FFT fft (14);
+    std::vector<float> frame ((size_t) (2 * kFft));
+    std::array<double, 6> power {};
+    int frames = 0;
+    for (size_t at = 0; at + kFft <= tail.size(); at += kFft / 2, ++frames)
+    {
+        std::fill (frame.begin(), frame.end(), 0.0f);
+        for (int i = 0; i < kFft; ++i) frame[(size_t) i] = tail[at + (size_t) i] * (float) (0.5 - 0.5 * std::cos (2 * kPi * i / kFft));
+        fft.performFrequencyOnlyForwardTransform (frame.data());
+        for (int b = 0; b < kFft / 2; ++b)
+        {
+            const double hz = b * kSr / kFft;
+            for (int band = 0; band < 6; ++band)
+                if (hz >= kBandEdges[band] && hz < kBandEdges[band + 1]) power[(size_t) band] += (double) frame[(size_t) b] * frame[(size_t) b];
+        }
+    }
+    for (int band = 0; band < 6; ++band)
+        out.bands[(size_t) band] = 10 * std::log10 (power[(size_t) band] / juce::jmax (1, frames) + 1e-30);
+    return out;
+}
+
+int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
+    const juce::File golden = argc > 1 ? juce::File::getCurrentWorkingDirectory().getChildFile (argv[1]) : juce::File();
+    const bool writeGolden = argc > 2 && juce::String (argv[2]) == "--write";
     auto make = []
     {
         auto p = std::make_unique<BigBossProcessor>();
@@ -132,6 +268,218 @@ int main()
         const double natural = juce::jmax (maxD4 (l, 20 * kBlock, 40 * kBlock), maxD4 (l, 60 * kBlock, 80 * kBlock));
         const double across = juce::jmax (maxD4 (l, 39 * kBlock, 44 * kBlock), maxD4 (l, 79 * kBlock, 84 * kBlock));
         CHECK (across < natural * 2, "MONO switches without a click (4th difference %g, the signal's own %g)", across, natural);
+    }
+
+    // the state round trip: every parameter, the order, the preset name and the host program come back
+    {
+        auto a = make();
+        set (*a, pid::limLast, 0.0f);
+        set (*a, pid::inTrim, 3.5f);
+        set (*a, pid::volume, -4.0f);
+        set (*a, pid::outDither, 2.0f);
+        set (*a, pid::eqFreq (2), 1800.0f);
+        set (*a, pid::compXfmr, 2.0f);
+        a->loadFactoryPreset (3);
+        bb::Chain::Order o { 4, 2, 0, 1, 3 };   // the limiter first
+        a->setOrder (o);
+        a->setPresetName ("My master");
+        const auto before = a->currentValues();
+        juce::MemoryBlock mb;
+        a->getStateInformation (mb);
+
+        auto b = std::make_unique<BigBossProcessor>();
+        GestureCounter counter;
+        b->addListener (&counter);
+        b->setStateInformation (mb.getData(), (int) mb.getSize());
+        b->removeListener (&counter);
+        int differ = 0;
+        for (const auto& [id, v] : b->currentValues())
+            if (std::abs (v - before.at (id)) > 1e-4f) { ++differ; std::printf ("  %s: %g, was %g\n", id.toRawUTF8(), v, before.at (id)); }
+        CHECK (differ == 0, "a session restores every parameter (%d differ)", differ);
+        CHECK (b->getOrder() == a->getOrder(), "a session restores the order");
+        CHECK (b->getPresetName() == "My master", "a session restores the preset name (%s)", b->getPresetName().toRawUTF8());
+        CHECK (b->getCurrentProgram() == 3, "a session restores the host program (%d)", b->getCurrentProgram());
+        CHECK (counter.gestures == 0, "restoring a session makes no change gestures (%d)", counter.gestures);
+    }
+
+    // a session from before STAY LAST, with the limiter in the middle, keeps its order
+    {
+        auto a = make();
+        set (*a, pid::limLast, 0.0f);
+        a->setOrder ({ 0, 4, 1, 2, 3 });
+        juce::MemoryBlock mb;
+        a->getStateInformation (mb);
+        auto xml = juce::AudioProcessor::getXmlFromBinary (mb.getData(), (int) mb.getSize());
+        for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+            if (e->getStringAttribute ("id") == pid::limLast) { xml->removeChildElement (e, true); break; }
+        juce::MemoryBlock old;
+        juce::AudioProcessor::copyXmlToBinary (*xml, old);
+        auto b = make();
+        b->setStateInformation (old.getData(), (int) old.getSize());
+        CHECK (b->getOrder() == a->getOrder(), "an old session's order is kept");
+        CHECK (get (*b, pid::limLast) < 0.5f, "an old session with the limiter mid-chain has STAY LAST off");
+    }
+
+    // STAY LAST: whatever order is asked for, the limiter ends up last; switched off, any order goes
+    {
+        auto p = make();
+        const int lim = p->limiterSlot();
+        p->setOrder ({ lim, 0, 1, 2, 3 });
+        CHECK (p->getOrder()[BigBossProcessor::kNumSlots - 1] == lim, "STAY LAST keeps the limiter last");
+        CHECK (p->getOrder()[0] == 0 && p->getOrder()[1] == 1, "STAY LAST keeps the others in order");
+        set (*p, pid::limLast, 0.0f);
+        p->setOrder ({ lim, 0, 1, 2, 3 });
+        CHECK (p->getOrder()[0] == lim, "with STAY LAST off the limiter can go first");
+        set (*p, pid::limLast, 1.0f);
+        run (*p, 2, none, nothing);   // the audio thread puts it back
+        CHECK (p->getOrder()[BigBossProcessor::kNumSlots - 1] == lim, "switching STAY LAST on moves the limiter back to the end");
+    }
+
+    // presets leave gain staging and the output alone, loading and saving
+    {
+        auto p = make();
+        set (*p, pid::inTrim, 4.0f);
+        set (*p, pid::volume, -3.0f);
+        set (*p, pid::outMono, 1.0f);
+        set (*p, pid::outDither, 3.0f);
+        p->loadFactoryPreset (5);
+        CHECK (std::abs (get (*p, pid::inTrim) - 4.0f) < 0.01f, "a factory preset keeps the input trim (%g)", get (*p, pid::inTrim));
+        CHECK (std::abs (get (*p, pid::volume) + 3.0f) < 0.01f, "a factory preset keeps the fader (%g)", get (*p, pid::volume));
+        CHECK (get (*p, pid::outMono) > 0.5f, "a factory preset keeps MONO");
+        CHECK (std::abs (get (*p, pid::outDither) - 3.0f) < 0.01f, "a factory preset keeps the dither");
+
+        const juce::String name = "bb test preset " + juce::String (juce::Random::getSystemRandom().nextInt (1 << 30));
+        CHECK (p->saveUserPreset (name), "a user preset saves");
+        const auto file = presets::userFolder().getChildFile (name + presets::extension);
+        auto xml = juce::XmlDocument::parse (file);
+        int sessionParams = 0;
+        if (xml != nullptr)
+            for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+                if (BigBossProcessor::sessionOnly (e->getStringAttribute ("id"))) ++sessionParams;
+        CHECK (xml != nullptr && sessionParams == 0, "a user preset holds no gain staging or output settings (%d)", sessionParams);
+        set (*p, pid::inTrim, -2.0f);
+        set (*p, pid::volume, 1.0f);
+        CHECK (p->loadUserPreset (file), "a user preset loads");
+        CHECK (std::abs (get (*p, pid::inTrim) + 2.0f) < 0.01f && std::abs (get (*p, pid::volume) - 1.0f) < 0.01f,
+               "a user preset keeps the trim and fader (%g, %g)", get (*p, pid::inTrim), get (*p, pid::volume));
+        CHECK (p->getCurrentProgram() == 5, "a user preset leaves the host program where it was (%d)", p->getCurrentProgram());
+        file.deleteFile();
+    }
+
+    // the output ceiling, with the fader pushing +3 dB and the limiter first in the chain
+    {
+        auto measure = [&] (bool lock, float& overDb, float& lockDb)
+        {
+            auto p = make();
+            set (*p, pid::limLast, 0.0f);
+            set (*p, pid::outLock, lock ? 1.0f : 0.0f);
+            set (*p, pid::volume, 3.0f);
+            set (*p, pid::limCeiling, -1.0f);
+            for (const char* m : { "eq", "comp", "tape", "deess" }) set (*p, pid::bypass (m), 1.0f);   // only the limiter's level
+            p->setOrder ({ 4, 0, 1, 2, 3 });
+            p->reset();
+            TestMix mix;
+            juce::AudioBuffer<float> buf (2, kBlock);
+            juce::MidiBuffer midi;
+            bb::TruePeak tp;
+            tp.prepare (kSr, 2);
+            overDb = lockDb = 0;
+            for (int k = 0; k < (int) (4 * kSr / kBlock); ++k)
+            {
+                mix.fill (buf, kSr);
+                p->processBlock (buf, midi);
+                if (k < 40) { p->takeOverDb(); p->takeLockDb(); continue; }   // past the reorder's fade
+                std::vector<double> l (buf.getReadPointer (0), buf.getReadPointer (0) + kBlock), r (buf.getReadPointer (1), buf.getReadPointer (1) + kBlock);
+                const double* chs[2] { l.data(), r.data() };
+                tp.process (chs, kBlock);
+                overDb = juce::jmax (overDb, p->takeOverDb());
+                lockDb = juce::jmax (lockDb, p->takeLockDb());
+            }
+            return juce::Decibels::gainToDecibels (juce::jmax (tp.heldPeak (0), tp.heldPeak (1)));
+        };
+        float over = 0, caught = 0;
+        const double locked = measure (true, over, caught);
+        CHECK (locked <= -1.0 + 0.02, "CEILING LOCK holds the ceiling after the fader (%.3f dBTP)", locked);
+        CHECK (over == 0.0f, "the OVER lamp stays dark with CEILING LOCK on (%.2f dB)", over);
+        CHECK (caught > 1.0f, "the lock reports what it caught (%.2f dB)", caught);
+        const double open = measure (false, over, caught);
+        CHECK (open > 0.0, "without the lock the fader takes the output over the ceiling (%.2f dBTP)", open);
+        CHECK (over > 1.0f && std::abs (over - (float) (open + 1.0)) < 0.5f, "the OVER lamp reports how far (%.2f dB, the output %.2f dBTP)", over, open);
+    }
+
+    // the editor follows an order set behind its back (a session restored, a host undo)
+    {
+        auto p = make();
+        set (*p, pid::limLast, 0.0f);
+        std::unique_ptr<juce::AudioProcessorEditor> ed (p->createEditor());
+        auto* editor = dynamic_cast<BigBossEditor*> (ed.get());
+        auto* limitPanel = findChild<kit::LimitPanel> (*ed);
+        auto* eqPanel = findChild<kit::EqPanel> (*ed);
+        CHECK (editor != nullptr && limitPanel != nullptr && eqPanel != nullptr, "the editor has the modules");
+        if (editor != nullptr && limitPanel != nullptr && eqPanel != nullptr)
+        {
+            const int firstY = eqPanel->getY();
+            p->setOrder ({ 4, 0, 1, 2, 3 });
+            editor->refreshNow();
+            CHECK (limitPanel->getY() == firstY, "the editor moves the limiter to the top when the order changes (%d, %d)", limitPanel->getY(), firstY);
+        }
+    }
+
+    // the assistant belongs to the processor: closing the window mid-listen neither stops nor drops it
+    {
+        auto p = make();
+        {
+            std::unique_ptr<juce::AudioProcessorEditor> ed (p->createEditor());
+            p->assistant().listen();
+        }
+        TestMix mix;
+        juce::AudioBuffer<float> buf (2, kBlock);
+        juce::MidiBuffer midi;
+        for (int k = 0; k < (int) (11 * kSr / kBlock); ++k) { mix.fill (buf, kSr); p->processBlock (buf, midi); }
+        for (int wait = 0; wait < 3000 && p->assistant().busy(); ++wait) juce::Thread::sleep (10);
+        CHECK (p->assistant().canApply(), "the assistant finishes its plan with the window closed (state %d)", (int) p->assistant().getState());
+        set (*p, pid::volume, 5.0f);
+        CHECK (p->assistant().apply(), "the plan applies");
+        CHECK (std::abs (get (*p, pid::volume)) < 0.01f, "applying a plan puts the fader at 0 dB (%g)", get (*p, pid::volume));
+        CHECK (p->assistant().undo() && std::abs (get (*p, pid::volume) - 5.0f) < 0.01f, "UNDO puts the fader back (%g)", get (*p, pid::volume));
+    }
+
+    // golden renders: each factory preset on the test mix, against the stored numbers, so a change to
+    // the sound shows up as a failure until the file is rewritten on purpose
+    if (golden != juce::File())
+    {
+        const auto& f = presets::factory();
+        juce::StringArray lines;
+        std::map<juce::String, juce::StringArray> stored;
+        if (! writeGolden)
+            for (const auto& line : juce::StringArray::fromLines (golden.loadFileAsString()))
+                if (line.isNotEmpty() && ! line.startsWith ("#"))
+                    stored[line.upToFirstOccurrenceOf ("|", false, false).trim()] = juce::StringArray::fromTokens (line.fromFirstOccurrenceOf ("|", false, false).trim(), " ", "");
+        lines.add ("# factory presets on the test mix (tests/PluginTests.cpp): name | LUFS dBTP, then band levels (dB) "
+                   "20-100 100-300 300-1k 1k-3k 3k-8k 8k-20k. Rewrite with: bb_plugin_tests <this file> --write");
+        for (int i = 0; i < (int) f.size(); ++i)
+        {
+            const auto r = renderPreset (i);
+            juce::String nums = juce::String (r.lufs, 2) + " " + juce::String (r.truePeak, 2);
+            for (auto b : r.bands) nums << " " << juce::String (b, 2);
+            lines.add (juce::String (f[(size_t) i].name) + " | " + nums);
+            if (writeGolden) continue;
+            const auto it = stored.find (f[(size_t) i].name);
+            CHECK (it != stored.end(), "golden numbers for %s", f[(size_t) i].name);
+            if (it == stored.end()) continue;
+            const auto& want = it->second;
+            std::vector<double> got { r.lufs, r.truePeak };
+            for (auto b : r.bands) got.push_back (b);
+            bool same = want.size() == (int) got.size();
+            for (int k = 0; same && k < (int) got.size(); ++k)
+                same = std::abs (got[(size_t) k] - want[k].getDoubleValue()) <= (k == 1 ? 0.1 : 0.3);
+            CHECK (same, "%s renders as before (now %s, was %s)", f[(size_t) i].name, nums.toRawUTF8(), want.joinIntoString (" ").toRawUTF8());
+        }
+        if (writeGolden)
+        {
+            golden.replaceWithText (lines.joinIntoString ("\n") + "\n");
+            std::printf ("wrote %s\n", golden.getFullPathName().toRawUTF8());
+        }
     }
 
     std::printf ("%d checks, %d failed\n", checks, failures);

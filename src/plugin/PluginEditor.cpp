@@ -14,7 +14,8 @@ BigBossEditor::BigBossEditor (BigBossProcessor& p)
         if (id == "eq")         u = std::make_unique<kit::EqPanel> (p.apvts);
         else if (id == "comp")  u = std::make_unique<kit::CompPanel> (p.apvts, p.compressor());
         else if (id == "tape")  u = std::make_unique<kit::TapePanel> (p.apvts, p.tapeMachine());
-        else if (id == "deess") u = std::make_unique<kit::DeEssPanel> (p.apvts, p.deesser(), [&p] { return p.deessSettings().freq; });
+        else if (id == "deess") u = std::make_unique<kit::DeEssPanel> (p.apvts, p.deesser(), [&p] { return p.deessSettings().freq; },
+                                                                     [&p] { return p.sampleRateHz.load(); });
         else                    u = std::make_unique<kit::LimitPanel> (p.apvts, p.limiter(), [&p] { return p.limitSettings(); });
         u->onDrag = [this, s] (int dy) { dragModule (s, dy); };
         u->onDrop = [this, s] { dropModule (s); };
@@ -77,6 +78,8 @@ void BigBossEditor::tickAll (float seconds)
     analyser.tick (seconds);   // always, so the loudness history has no gap
     master.tick (seconds);
     output.tick (seconds);
+    // the host can move the modules too (a session restored, a host undo, a program change)
+    if (draggingSlot < 0 && proc.getOrder() != laidOut) layoutModules();
     // every module, shown or not, so meters and the limiter's history have no gap
     for (auto& m : modules) m->tick (seconds);
 }
@@ -84,6 +87,7 @@ void BigBossEditor::tickAll (float seconds)
 void BigBossEditor::layoutModules()
 {
     const auto order = proc.getOrder();
+    laidOut = order;
     for (int k = 0; k < kModules; ++k)
         modules[(size_t) order[(size_t) k]]->setBounds (kit::earWidth, modulesTop + k * kit::unitHeight, kit::panelWidth, kit::unitHeight);
     master.setBounds (kit::earWidth, 0, kit::panelWidth, kit::masterHeight);

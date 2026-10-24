@@ -14,6 +14,7 @@
 
 #include "assist/Assistant.h"
 #include "chain/Chain.h"
+#include "plugin/AssistantHost.h"
 #include "plugin/Presets.h"
 
 #include <array>
@@ -160,14 +161,14 @@ private:
 class DeEssPanel final : public Panel
 {
 public:
-    DeEssPanel (Apvts&, const bb::DeEsser&, std::function<double()> lowestBandHz);
+    DeEssPanel (Apvts&, const bb::DeEsser&, std::function<double()> lowestBandHz, std::function<double()> sampleRate);
     void paint (juce::Graphics&) override;
     void resized() override;
     void tick (float seconds) override;
 
 private:
     const bb::DeEsser& deesser;
-    std::function<double()> lowestBandHz;
+    std::function<double()> lowestBandHz, sampleRate;
     Switch *power, *listen;
     Knob *threshold, *range, *freq, *release;
     ChoiceButtons* mode;
@@ -201,7 +202,7 @@ public:
 private:
     bb::Limiter& limiter;
     std::function<bb::Limiter::Settings()> settings;
-    Switch *power, *autoRel, *truePeak;
+    Switch *power, *autoRel, *truePeak, *stayLast;
     Knob *drive, *ceiling, *release, *link;
     ChoiceButtons* style;
     LimitHistory history;
@@ -245,12 +246,12 @@ private:
 };
 
 // the assistant, which listens to the mix and sets the console up for a loudness goal: a 1U panel that
-// drops down over the rack from BB-1's ASSISTANT key, and keeps working while it is folded away
+// drops down over the rack from BB-1's ASSISTANT key. It is a view of the processor's AssistantHost, so
+// the work goes on while it is folded away or the window is closed
 class AssistantPanel final : public Panel
 {
 public:
     explicit AssistantPanel (BigBossProcessor&);
-    ~AssistantPanel() override;
     void paint (juce::Graphics&) override;
     void resized() override;
     void tick (float seconds) override;
@@ -258,31 +259,21 @@ public:
     static constexpr int shadow = 10;   // drawn below the faceplate, over the rack
     std::function<void()> onOrderChanged;   // undo moved the modules
     std::function<void()> onClose;
-    bool hasNews() const { return state == State::Listening || state == State::Thinking || state == State::Ready; }
+    bool hasNews() const { return host.hasNews(); }
 
     // for the snapshot tool
-    void pressListen() { listen(); }
-    bool busy() const { return state == State::Listening || state == State::Thinking; }
+    void pressListen() { host.listen(); }
+    bool busy() const { return host.busy(); }
 
 private:
-    void listen();
-    void apply();
-    void undo();
+    using State = AssistantHost::State;
 
     BigBossProcessor& proc;
+    AssistantHost& host;
     juce::ToggleButton listenKey { "LISTEN" }, applyKey { "APPLY" }, undoKey { "UNDO" }, closeKey { "CLOSE" };
     std::array<juce::ToggleButton, 4> goalKeys;
     juce::Rectangle<int> statusLcd;
-
-    enum class State { Idle, Listening, Thinking, Ready, Applied, Failed } state = State::Idle, shownState = State::Idle;
-    bb::assist::Goal goal = bb::assist::Goal::Streaming;
-    std::thread worker;
-    std::atomic<bool> cancel { false }, workerDone { false };
-    std::unique_ptr<bb::assist::Plan> plan;
-    presets::Values before;   // for UNDO
-    juce::String beforePreset;
-    bb::Chain::Order beforeOrder {};
-    float thinkingFor = 0;
+    State shownState = State::Idle;
 };
 
 // ------------------------------------------------------------------- output and analyser
@@ -302,7 +293,13 @@ private:
     juce::Slider fader { juce::Slider::LinearHorizontal, juce::Slider::NoTextBox };
     Apvts::SliderAttachment faderAttachment;
     Knob* trim;
-    Switch* mono;
+    Switch *mono, *lock;
+    juce::ComboBox dither;
+    std::unique_ptr<Apvts::ComboBoxAttachment> ditherAttachment;   // made once the box has its items
+    // the OVER lamp: red while the output went over the ceiling, amber while CEILING LOCK caught it;
+    // each held a second so a single over is seen
+    float overHold = 0, lockHold = 0;
+    int shownLamp = 0;
     PeakMeter inMeter, outMeter;
     juce::Label readout;
     float shortTerm = -200, integrated = -200, truePeak = -200;

@@ -71,9 +71,10 @@ void TruePeak::process (const double* const* channels, int n)
             for (int ph = 0; ph < L; ++ph)
             {
                 const double* cf = coef.data() + ph * kTaps;
-                double y = 0;
-                for (int t = 0; t < kTaps; ++t) y += cf[t] * w[t];
-                const double a2 = std::abs (y);
+                // four partial sums, so the compiler can vectorise (it may not reorder a single sum)
+                double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+                for (int t = 0; t < kTaps; t += 4) { s0 += cf[t] * w[t]; s1 += cf[t + 1] * w[t + 1]; s2 += cf[t + 2] * w[t + 2]; s3 += cf[t + 3] * w[t + 3]; }
+                const double a2 = std::abs ((s0 + s1) + (s2 + s3));
                 pk = std::max (pk, a2);
                 // a local maximum: the true crest lies between the oversampled points, so fit a parabola
                 // through the three around it (brings 4x within 0.05 dB up to 20 kHz at 44.1 kHz)
