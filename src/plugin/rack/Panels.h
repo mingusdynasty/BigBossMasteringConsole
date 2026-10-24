@@ -140,7 +140,7 @@ public:
     void tick (float seconds) override;
 
 private:
-    Switch *power, *optoIn, *vcaIn, *scHpf;
+    Switch *power, *optoIn, *vcaIn, *scHpf, *link;
     Knob *optoThr, *optoGain, *vcaThr, *ratio, *attack, *recovery, *vcaGain;
     ChoiceButtons* xfmr;
     VuMeter optoMeter, vcaMeter;
@@ -155,9 +155,9 @@ public:
     void tick (float seconds) override;
 
 private:
-    Switch *power, *link;
+    Switch *power, *link, *xtalk, *hiss;
     ChoiceButtons *speed, *eq, *formulation, *bias;
-    Knob *input, *output, *wow;
+    Knob *input, *output, *wow, *biasTrim, *azimuth;
     VuMeter vuL, vuR;
 };
 

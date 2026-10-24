@@ -193,6 +193,63 @@ static void testCompressor()
         CHECK (shortB > 0 && longB > 2 * shortB, "comp: opto lets go in %.2f s after 150 ms, %.2f s after 5 s", shortB, longB);
     }
 
+    {   // the optical release comes in two parts: most of a short burst's reduction goes within 150 ms,
+        // and what remains after a long hold lets go over seconds
+        auto after = [&] (double burstSecs, double probeSecs)
+        {
+            bb::DualCompressor::Settings s;
+            s.vca = false; s.optoThreshold = -30;
+            auto l = sine (sr, 1000, 0.5, burstSecs + probeSecs), r = l;
+            for (size_t i = (size_t) (burstSecs * sr); i < l.size(); ++i) l[i] *= 0.01;
+            r = l;
+            bb::DualCompressor c; c.setSettings (s); c.prepare (sr, 64);
+            double held = 0;
+            for (size_t pos = 0; pos + 64 <= l.size(); pos += 64)
+            {
+                c.process (l.data() + pos, r.data() + pos, 64);
+                if (pos + 64 <= (size_t) (burstSecs * sr)) held = c.optoReduction();
+            }
+            return std::pair { held, (double) c.optoReduction() };
+        };
+        const auto [h1, r1] = after (0.15, 0.15);
+        const auto [h2, r2] = after (5.0, 0.15);
+        const auto [h3, r3] = after (5.0, 1.0);
+        CHECK (r1 < 0.45 * h1, "comp: opto keeps %.1f of %.1f dB 150 ms after a short burst", r1, h1);
+        CHECK (r2 > 0.4 * h2 && r3 > 1.0 && r3 < 0.6 * r2, "comp: after a long hold, %.1f of %.1f dB left at 150 ms, %.1f at 1 s", r2, h2, r3);
+    }
+
+    {   // the optical attack quickens with the size of the move
+        auto timeTo = [&] (double amp)
+        {
+            bb::DualCompressor::Settings s;
+            s.vca = false; s.optoThreshold = -40;
+            auto l = sine (sr, 1000, amp, 0.5), r = l;
+            bb::DualCompressor c; c.setSettings (s); c.prepare (sr, 16);
+            const double want = 0.5 * bb::DualCompressor::optoCurve (dbOf (amp), -40);
+            for (size_t pos = 0; pos + 16 <= l.size(); pos += 16)
+            {
+                c.process (l.data() + pos, r.data() + pos, 16);
+                if (c.optoReduction() > want) return (double) pos / sr;
+            }
+            return 1.0;
+        };
+        const double small = timeTo (0.02), big = timeTo (0.9);
+        CHECK (big < 0.6 * small, "comp: opto reaches half its reduction in %.1f ms for a small move, %.1f ms for a big one", small * 1e3, big * 1e3);
+    }
+
+    {   // link: linked, a loud left pulls the right down too; dual mono leaves the right alone
+        double right[2];
+        for (int link = 0; link < 2; ++link)
+        {
+            bb::DualCompressor::Settings s;
+            s.optoThreshold = -24; s.vcaThreshold = -20; s.ratio = 3; s.link = link == 1;
+            auto l = sine (sr, 1000, 0.7, 2.0), r = sine (sr, 1000, 0.02, 2.0);
+            run (s, l, r);
+            right[link] = dbOf (harmonic (r, sr, 1000, 1, r.size() / 2) / 0.02);
+        }
+        CHECK (right[1] < -6 && std::abs (right[0]) < 0.1, "comp: quiet right channel moves %.2f dB linked, %.2f dB dual mono", right[1], right[0]);
+    }
+
     {   // transformers: Steel and Iron colour the lows, all leave the highs alone
         double t50[3], t5k[3];
         for (int x = 0; x < 3; ++x)

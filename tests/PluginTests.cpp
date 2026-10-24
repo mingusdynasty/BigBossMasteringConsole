@@ -489,7 +489,8 @@ int main (int argc, char** argv)
             ref.applyGain (0.5f);   // about 6 dB under the raw mix
             file.deleteFile();
             juce::WavAudioFormat wav;
-            std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (file), 44100, 2, 24, {}, 0));
+            std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+            auto w = wav.createWriterFor (stream, juce::AudioFormatWriterOptions().withSampleRate (44100).withNumChannels (2).withBitsPerSample (24));
             CHECK (w != nullptr, "a reference file is written");
             if (w != nullptr) w->writeFromAudioSampleBuffer (ref, 0, ref.getNumSamples());
         }

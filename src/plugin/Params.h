@@ -23,12 +23,14 @@ inline const juce::String eqWarm = "eq_warm", eqHpf = "eq_hpf", eqHpf24 = "eq_hp
 
 // tape
 inline const juce::String tapeSpeed = "tape_speed", tapeEq = "tape_eq", tapeType = "tape_type", tapeBias = "tape_bias",
-                          tapeIn = "tape_in", tapeOut = "tape_out", tapeLink = "tape_link", tapeWow = "tape_wow";
+                          tapeIn = "tape_in", tapeOut = "tape_out", tapeLink = "tape_link", tapeWow = "tape_wow",
+                          tapeXtalk = "tape_xtalk", tapeAzimuth = "tape_azimuth", tapeHiss = "tape_hiss", tapeBiasTrim = "tape_bias_trim";
 
 // compressor
 inline const juce::String compOpto = "comp_opto", compOptoThr = "comp_opto_thr", compOptoGain = "comp_opto_gain",
                           compVca = "comp_vca", compVcaThr = "comp_vca_thr", compRatio = "comp_ratio", compAttack = "comp_attack",
-                          compRecovery = "comp_recovery", compVcaGain = "comp_vca_gain", compXfmr = "comp_xfmr", compScHpf = "comp_sc_hpf";
+                          compRecovery = "comp_recovery", compVcaGain = "comp_vca_gain", compXfmr = "comp_xfmr", compScHpf = "comp_sc_hpf",
+                          compLink = "comp_link";
 
 // limiter
 inline const juce::String limDrive = "limit_drive", limCeiling = "limit_ceiling", limStyle = "limit_style", limAuto = "limit_auto",

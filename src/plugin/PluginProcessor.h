@@ -237,12 +237,13 @@ private:
     struct TapeParams
     {
         std::atomic<float>* speed = nullptr, *standard = nullptr, *type = nullptr, *bias = nullptr,
-                          *in = nullptr, *out = nullptr, *link = nullptr, *wow = nullptr;
+                          *in = nullptr, *out = nullptr, *link = nullptr, *wow = nullptr,
+                          *xtalk = nullptr, *azimuth = nullptr, *hiss = nullptr, *biasTrim = nullptr;
     } pTape;
     struct CompParams
     {
         std::atomic<float>* opto = nullptr, *optoThr = nullptr, *optoGain = nullptr, *vca = nullptr, *vcaThr = nullptr, *ratio = nullptr,
-                          *attack = nullptr, *recovery = nullptr, *vcaGain = nullptr, *xfmr = nullptr, *scHpf = nullptr;
+                          *attack = nullptr, *recovery = nullptr, *vcaGain = nullptr, *xfmr = nullptr, *scHpf = nullptr, *link = nullptr;
     } pComp;
     struct LimitParams
     {

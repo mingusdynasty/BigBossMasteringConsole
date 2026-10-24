@@ -282,6 +282,67 @@ static void testTape()
         }
         s.wow = 0;
     }
+    {   // the opt-in extras: crosstalk, azimuth, hiss, bias trim
+        auto rightFromLeft = [&] (bool xt)
+        {
+            bb::TapeMachine t;
+            auto st = s; st.crosstalk = xt;
+            auto p = tapeProc (t, st, sr);
+            auto l = sine (sr, 1000, 0.3, 1.0);
+            std::vector<double> r (l.size(), 0.0);
+            runBlocks (p, l, r);
+            return 20 * std::log10 (std::max (harmonic (r, sr, 1000, 1), 1e-12) / harmonic (l, sr, 1000, 1));
+        };
+        const double off = rightFromLeft (false), on = rightFromLeft (true);
+        CHECK (off < -120 && on > -46 && on < -40, "tape crosstalk at 1 kHz: %.1f dB off, %.1f dB on", off, on);
+
+        auto monoTop = [&] (double us)
+        {
+            bb::TapeMachine t;
+            auto st = s; st.azimuthUs = us;
+            auto p = tapeProc (t, st, sr);
+            auto l = sine (sr, 15000, 0.05, 1.0), r = l;
+            runBlocks (p, l, r);
+            std::vector<double> m (l.size());
+            for (size_t i = 0; i < l.size(); ++i) m[i] = 0.5 * (l[i] + r[i]);
+            return 20 * std::log10 (harmonic (m, sr, 15000, 1) / harmonic (l, sr, 15000, 1));
+        };
+        const double az0 = monoTop (0), az20 = monoTop (20);
+        CHECK (std::abs (az0) < 0.05 && az20 < -3.5 && az20 > -6, "tape azimuth: 15 kHz in mono %.2f dB at 0 us, %.2f dB at 20 us", az0, az20);
+
+        auto hissDb = [&] (int tape, int speed)
+        {
+            bb::TapeMachine t;
+            auto st = s; st.hiss = true; st.tape = tape; st.speed = speed;
+            auto p = tapeProc (t, st, sr);
+            std::vector<double> l ((size_t) sr * 2, 0.0), r = l;
+            runBlocks (p, l, r);
+            double e = 0;
+            for (size_t i = l.size() / 2; i < l.size(); ++i) e += l[i] * l[i] + r[i] * r[i];
+            return 10 * std::log10 (e / (double) l.size());
+        };
+        const double h456 = hissDb (0, 0), hGp9 = hissDb (1, 0), h30 = hissDb (0, 1);
+        CHECK (h456 > -87 && h456 < -81 && hGp9 < h456 - 1 && h30 < h456 - 1, "tape hiss: 456 15 ips %.1f, GP9 %.1f, 30 ips %.1f dBFS RMS", h456, hGp9, h30);
+
+        auto trimmed = [&] (int bias, double trim) { auto st = s; st.bias = bias; st.biasTrim = trim; return tapeThd (st, sr, 4); };
+        const double nom = trimmed (1, 0), up = trimmed (1, 1), over = trimmed (2, 0), down = trimmed (1, -1), under = trimmed (0, 0);
+        CHECK (over < up && up < nom && nom < down && down < under, "tape bias trim: under %.3f%%, -1 %.3f%%, nominal %.3f%%, +1 %.3f%%, over %.3f%%",
+               100 * under, 100 * down, 100 * nom, 100 * up, 100 * over);
+
+        // a trim sweep is smooth
+        bb::TapeMachine t;
+        t.setSettings (s); t.prepare (sr, 256);
+        auto l = sine (sr, 300, 0.2, 1.5), r = l;
+        for (size_t pos = 0; pos < l.size(); pos += 256)
+        {
+            auto st = s;
+            st.biasTrim = pos < (size_t) (0.5 * sr) ? 0.0 : (pos < (size_t) (0.6 * sr) ? 1.0 : -1.0);
+            t.setSettings (st);
+            t.process (l.data() + pos, r.data() + pos, (int) std::min<size_t> (256, l.size() - pos));
+        }
+        const double rough = roughness (l, sr, 300, 0.2 * 1.2, (size_t) (0.3 * sr), l.size());
+        CHECK (rough < 1.1, "tape bias trim jumps: step %.2fx the largest clean step", rough);
+    }
     {   // switching speed or tape mid-signal crossfades instead of clicking
         bb::TapeMachine t;
         t.setSettings (s); t.prepare (sr, 256);

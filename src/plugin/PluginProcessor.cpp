@@ -98,10 +98,11 @@ BigBossProcessor::BigBossProcessor()
     pEq.warm = raw (pid::eqWarm); pEq.hpf = raw (pid::eqHpf); pEq.hpf24 = raw (pid::eqHpf24);
     pEq.lpf = raw (pid::eqLpf); pEq.mono = raw (pid::eqMono); pEq.out = raw (pid::eqOut); pEq.stereo = raw (pid::eqStereo);
     pTape = { raw (pid::tapeSpeed), raw (pid::tapeEq), raw (pid::tapeType), raw (pid::tapeBias),
-              raw (pid::tapeIn), raw (pid::tapeOut), raw (pid::tapeLink), raw (pid::tapeWow) };
+              raw (pid::tapeIn), raw (pid::tapeOut), raw (pid::tapeLink), raw (pid::tapeWow),
+              raw (pid::tapeXtalk), raw (pid::tapeAzimuth), raw (pid::tapeHiss), raw (pid::tapeBiasTrim) };
     pComp = { raw (pid::compOpto), raw (pid::compOptoThr), raw (pid::compOptoGain), raw (pid::compVca), raw (pid::compVcaThr),
               raw (pid::compRatio), raw (pid::compAttack), raw (pid::compRecovery), raw (pid::compVcaGain), raw (pid::compXfmr),
-              raw (pid::compScHpf) };
+              raw (pid::compScHpf), raw (pid::compLink) };
     pLimit = { raw (pid::limDrive), raw (pid::limCeiling), raw (pid::limStyle), raw (pid::limAuto), raw (pid::limRelease),
                raw (pid::limTp), raw (pid::limLink) };
     pDeess = { raw (pid::deessThr), raw (pid::deessRange), raw (pid::deessFreq), raw (pid::deessRelease), raw (pid::deessMode),
@@ -241,6 +242,7 @@ bb::DualCompressor::Settings BigBossProcessor::compSettings() const
     s.vcaGain = pComp.vcaGain->load();
     s.transformer = juce::roundToInt (pComp.xfmr->load());
     s.sidechainHpf = pComp.scHpf->load() > 0.5f;
+    s.link = pComp.link->load() > 0.5f;
     return s;
 }
 
@@ -300,6 +302,10 @@ bb::TapeMachine::Settings BigBossProcessor::tapeSettings() const
     s.outputDb = pTape.out->load();
     s.link     = pTape.link->load() > 0.5f;
     s.wow      = pTape.wow->load() / 100.0;
+    s.crosstalk = pTape.xtalk->load() > 0.5f;
+    s.azimuthUs = pTape.azimuth->load();
+    s.hiss     = pTape.hiss->load() > 0.5f;
+    s.biasTrim = pTape.biasTrim->load();
     return s;
 }
 

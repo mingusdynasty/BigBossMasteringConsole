@@ -4,7 +4,15 @@
 // Signal path (oversampled to 176.4 kHz or more):
 //   input -> record EQ (the standard's pre-emphasis) -> Jiles-Atherton tape -> playback EQ (its exact
 //   inverse) -> back to the session rate -> playback head response (head bump, low-end roll-off, gap
-//   and spacing loss, bias's HF tilt) -> transport (wow and flutter) -> output
+//   and spacing loss, bias's HF tilt) -> crosstalk -> transport (wow and flutter, azimuth) -> hiss
+//   -> output
+//
+// The machine's imperfections beyond wow and flutter are opt-in and start off: crosstalk between
+// the tracks (the other track, band-limited to 100 Hz .. 2 kHz, 42 dB down), azimuth error (the right
+// track a few microseconds late, so the top cancels a little in mono) and tape hiss (about -84 dBFS
+// RMS on 456 at 15 ips, quieter on GP9 and at 30 ips; it rides the playback level, so hitting the
+// tape harder with LINK on lowers it). Bias trim moves continuously between the bias positions,
+// half a step either way.
 //
 // Calibration: 0 dB input puts a 0 VU tone (-18 dBFS RMS) at the tape's operating level. The drive is
 // solved so that 3% THD (MOL) falls 8 dB above that on the 456-type tape and 12 dB above on the
@@ -39,6 +47,10 @@ public:
         double outputDb = 0;   // playback level, -12 .. +12
         double wow = 0.25;     // wow and flutter, 0 .. 1 (1 = the A80's specified maximum)
         bool link = true;      // output follows input inversely, so Input changes drive, not level
+        bool crosstalk = false;
+        double azimuthUs = 0;  // right track's lag, 0 .. 20 us
+        bool hiss = false;
+        double biasTrim = 0;   // -1 .. +1: half a bias step under .. over
     };
 
     void prepare (double sampleRate, int maxBlock);   // allocates and calibrates; off the audio thread
@@ -85,10 +97,12 @@ private:
         FirstOrder recHF, recLF, pbHF, pbLF;   // emphasis (oversampled rate) and its exact inverse
         Biquad hpf, bump, dip, gap, tilt;      // playback head response (session rate)
         double drive = 1, makeup = 1;
+        double trimPos = -1;   // the bias position (0 under .. 2 over) its tape and tilt are set for
         bool matches (const Settings& s) const { return s.speed == speed && s.standard == standard && s.tape == tape && s.bias == bias; }
     };
 
     void configure (Path& p, const Settings& s);
+    void trim (Path& p, double biasPos);   // reversibility, makeup and tilt for a bias position
     void reset (Path& p);
     void run (Path& p, double* l, double* r, int n);   // in place, session rate
     void calibrate();
@@ -110,6 +124,14 @@ private:
     double driveCal[2] { 1, 1 }, makeupCal[2][3] { { 1, 1, 1 }, { 1, 1, 1 } };
 
     double inGain = 1, outGain = 1, glide = 0.01;
+    double trimNow = 0;   // bias positions, -0.5 .. +0.5
+
+    // crosstalk band-pass (one-pole high- and low-pass per track) and its fade
+    double xtHpC = 0, xtLpC = 0, xtHp[2] {}, xtLp[2] {}, xtMix = 0;
+    double azNow = 0;   // samples
+    // hiss: white noise, one-pole high-passed, per track
+    double hissMix = 0, hissHpC = 0, hissLp[2] {};
+    unsigned hissRng[2] { 0x9e3779b9u, 0x7f4a7c15u };
 
     // transport
     std::array<std::vector<double>, 2> line;

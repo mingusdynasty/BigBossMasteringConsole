@@ -316,6 +316,7 @@ CompPanel::CompPanel (Apvts& s, const bb::DualCompressor& comp)
     xfmr = &addChoice (pid::compXfmr, { "NICKEL", "IRON", "STEEL" }, ButtonStyle::dbxPush, true,
                        "Output transformer: Nickel clean, Iron low 2nd harmonic, Steel low 3rd harmonic and weight");
     scHpf = &addSwitch (pid::compScHpf, ButtonStyle::dbxPush, "SC 90", "Sidechain high-pass at 90 Hz, so bass does not drive the compression");
+    link = &addSwitch (pid::compLink, ButtonStyle::dbxPush, "LINK", "Stereo link: both channels share one gain so the image holds still. Off: dual mono, each channel compressed on its own");
     vcaIn = &addSwitch (pid::compVca, ButtonStyle::dbxPush, "IN", "Discrete stage in or out");
     vcaThr = &addKnob (pid::compVcaThr, KnobStyle::dbxBlack, 52, "Discrete threshold");
     ratio = &addKnob (pid::compRatio, KnobStyle::ureiSmall, 38, "Ratio, or Flood", true);
@@ -339,8 +340,9 @@ void CompPanel::resized()
     placeKnob (*optoThr, { 250, 60 });
     placeKnob (*optoGain, { 322, 62 });
     optoMeter.setBounds (360, 18, 128, 86);
-    xfmr->setBounds (508, 16, 60, 66);
-    scHpf->button->setBounds (508, 88, 60, 18);
+    xfmr->setBounds (508, 14, 60, 54);
+    scHpf->button->setBounds (508, 72, 60, 16);
+    link->button->setBounds (508, 92, 60, 16);
     vcaIn->button->setBounds (juce::Rectangle<int> (34, 18).withCentre ({ 604, 62 }));
     placeKnob (*vcaThr, { 670, 60 });
     placeKnob (*ratio, { 748, 62 });
@@ -353,7 +355,7 @@ void CompPanel::resized()
 void CompPanel::paint (juce::Graphics& g)
 {
     paintFinish (g, compFace, Finish::brushed);
-    nameplate (g, "BB-2", "MASTERING COMPRESSOR", juce::String::fromUTF8 ("OPTICAL · DISCRETE · LINKED"), compInk);
+    nameplate (g, "BB-2", "MASTERING COMPRESSOR", juce::String::fromUTF8 ("OPTICAL · DISCRETE"), compInk);
     const auto dim = compInk.withAlpha (0.8f);
     legendOver (g, "OPTICAL", 184, compInk, 4, 60);
     legendOver (g, "THRESHOLD", 250, compInk, 4, 70);
@@ -392,6 +394,10 @@ TapePanel::TapePanel (Apvts& s, const bb::TapeMachine& machine)
     output = &addKnob (pid::tapeOut, KnobStyle::neveGrey, 50, "Playback level");
     link = &addSwitch (pid::tapeLink, ButtonStyle::ureiWhite, "LINK", "Level link: playback follows record inversely, so drive changes colour, not loudness");
     wow = &addKnob (pid::tapeWow, KnobStyle::neveGrey, 36, "Wow and flutter, as a share of the machine's measured figure");
+    biasTrim = &addKnob (pid::tapeBiasTrim, KnobStyle::neveGrey, 34, "Bias trim: up to half a step toward under (brighter, dirtier) or over (darker, cleaner)");
+    azimuth = &addKnob (pid::tapeAzimuth, KnobStyle::neveGrey, 34, "Azimuth error: the right track lags by up to 20 microseconds, so the top end thins a little in mono");
+    xtalk = &addSwitch (pid::tapeXtalk, ButtonStyle::ureiWhite, "XTALK", "Crosstalk: each track picks up the other, 100 Hz to 2 kHz, 42 dB down");
+    hiss = &addSwitch (pid::tapeHiss, ButtonStyle::ureiWhite, "HISS", "Tape hiss: about -84 dBFS on 456 at 15 ips, quieter on GP9 and at 30 ips. Follows the playback level");
     addAndMakeVisible (vuL);
     addAndMakeVisible (vuR);
 }
@@ -413,8 +419,12 @@ void TapePanel::resized()
     placeKnob (*output, { 556, 60 });
     link->button->setBounds (juce::Rectangle<int> (40, 18).withCentre ({ 510, 103 }));
     placeKnob (*wow, { 636, 62 });
-    vuL.setBounds (700, 16, 200, 90);
-    vuR.setBounds (920, 16, 200, 90);
+    placeKnob (*biasTrim, { 706, 62 });
+    placeKnob (*azimuth, { 764, 62 });
+    xtalk->button->setBounds (800, 40, 46, 18);
+    hiss->button->setBounds (800, 72, 46, 18);
+    vuL.setBounds (866, 16, 152, 90);
+    vuR.setBounds (1028, 16, 152, 90);
 }
 
 void TapePanel::paint (juce::Graphics& g)
@@ -433,7 +443,11 @@ void TapePanel::paint (juce::Graphics& g)
     scale (g, *output, level, tapeInk, 6.5f);
     legendOver (g, "WOW", 636, tapeInk, 4, 50);
     scale (g, *wow, { { 0.0f, "0" }, { 100.0f, "100" } }, tapeInk, 6.5f);
-    rule (g, 680, tapeInk);
+    legendOver (g, "TRIM", 706, tapeInk, 4, 46);
+    scale (g, *biasTrim, { { -1.0f, "U" }, { 0.0f, "0" }, { 1.0f, "O" } }, tapeInk, 6.5f);
+    legendOver (g, "AZIM", 764, tapeInk, 4, 46);
+    scale (g, *azimuth, { { 0.0f, "0" }, { 20.0f, "20" } }, tapeInk, 6.5f);
+    rule (g, 856, tapeInk);
 }
 
 // ===================================================================== de-esser
